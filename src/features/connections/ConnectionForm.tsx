@@ -501,13 +501,13 @@ export function ConnectionForm({ profile, onSaved }: Props) {
             <Tooltip content="Check the details without saving" shortcut="Ctrl+Enter" side="top">
               <Button onClick={() => run("test")} disabled={busy}>
                 {busy && phase.action === "test" ? <Loader2 className="animate-spin" /> : <Zap />}
-                Test connection
+                Test Connection
               </Button>
             </Tooltip>
             <Tooltip content="Tests the connection, then saves it and opens the workspace" shortcut="Enter" side="top">
               <Button type="submit" variant="primary" disabled={busy}>
                 {busy && phase.action === "save" ? <Loader2 className="animate-spin" /> : null}
-                {profile ? "Save & reconnect" : "Save & connect"}
+                {profile ? "Save & Reconnect" : "Save & Connect"}
                 {!(busy && phase.action === "save") && <ArrowRight />}
               </Button>
             </Tooltip>

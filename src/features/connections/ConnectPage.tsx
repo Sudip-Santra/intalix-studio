@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CloudOff, FileOutput, KeyRound, LogIn, MoreVertical, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { CloudOff, FileOutput, KeyRound, LogIn, MoreVertical, Pencil, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { client, type ConnectionProfile } from "@/services/client";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -105,6 +105,7 @@ export function ConnectPage({ onConnected }: ConnectPageProps) {
             selectedId={selected?.id ?? null}
             error={deleteError}
             onNew={() => open(null)}
+            onEdit={open}
             onConnect={onConnected}
             onDelete={setPendingDelete}
           />
@@ -152,6 +153,7 @@ function SavedConnections({
   selectedId,
   error,
   onNew,
+  onEdit,
   onConnect,
   onDelete,
 }: {
@@ -159,6 +161,7 @@ function SavedConnections({
   selectedId: string | null;
   error: string | null;
   onNew: () => void;
+  onEdit: (p: ConnectionProfile) => void;
   onConnect: (p: ConnectionProfile) => void;
   onDelete: (p: ConnectionProfile) => void;
 }) {
@@ -226,12 +229,15 @@ function SavedConnections({
                     <DropdownMenuItem onSelect={() => onConnect(p)}>
                       <LogIn /> Enter Workspace
                     </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => onEdit(p)}>
+                      <Pencil /> Edit Connection
+                    </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       onSelect={() => onDelete(p)}
                       className="text-danger data-[highlighted]:bg-danger-soft data-[highlighted]:text-danger [&_svg]:text-danger!"
                     >
-                      <Trash2 /> Delete
+                      <Trash2 /> Delete Connection
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
