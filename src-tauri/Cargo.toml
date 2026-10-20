@@ -1,0 +1,57 @@
+[package]
+name = "intalix-studio"
+version = "0.1.0"
+description = "Intalix Studio - Database Reporting & Analytics Studio"
+authors = ["Intalix"]
+license = ""
+repository = ""
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+name = "intalix_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.4", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-postgres = "0.7.18"
+deadpool-postgres = { version = "0.14.2", default-features = false, features = ["rt_tokio_1"] }
+tokio-postgres-rustls = "0.14.0"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8.5"
+rustls-pki-types = { version = "1.15.1", features = ["std"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "macros"] }
+secrecy = { version = "0.10.3", features = ["serde"] }
+thiserror = "2.0.21"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+uuid = { version = "1.28.0", features = ["v4", "serde"] }
+time = { version = "0.3.55", features = ["formatting"] }
+keyring-core = "1.0.1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# Operational code must return typed errors instead of panicking (see PROJECT.md section 15).
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+todo = "warn"
+dbg_macro = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
+
+[target."cfg(windows)".dependencies]
+windows-native-keyring-store = "1.1.0"

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-query-preview"
+description = "Enables the query_preview command without any pre-configured scope."
+commands.allow = ["query_preview"]
+
+[[permission]]
+identifier = "deny-query-preview"
+description = "Denies the query_preview command without any pre-configured scope."
+commands.deny = ["query_preview"]

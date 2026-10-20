@@ -1,0 +1,263 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Design tokens.
+ * - Every colour in the UI comes from these variables; components never use raw hex values.
+ * - Accent colours: orange (default) is defined below; other colours are derived at runtime
+ *   by src/app/accent.ts and set inline on <html>, overriding these values.
+ * - Corners are sharp by design: there is no radius token and components do not use rounded-*.
+ */
+
+:root {
+  /* Light theme is white throughout; borders separate panels. surface-2 is the light grey
+     used only for inputs and hover states. */
+  --background: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f6f6f7;
+  --surface-sunken: #ffffff;
+  --border: #e3e3e6;
+  --border-strong: #cfcfd4;
+  --foreground: #121214;
+  --muted-foreground: #63636b;
+  --subtle-foreground: #8e8e96;
+
+  --success: #15803d;
+  --success-soft: #f0fdf4;
+  --warning: #b45309;
+  --warning-soft: #fffbeb;
+  --danger: #c81e1e;
+  --danger-foreground: #ffffff;
+  --danger-soft: #fef2f2;
+
+  --env-development: #0284c7;
+  --env-staging: #d97706;
+  --env-production: #dc2626;
+
+  --grid-line: rgb(18 18 20 / 0.05);
+
+  --syntax-keyword: #b8400a;
+  --syntax-string: #15803d;
+  --syntax-number: #7c3aed;
+  --syntax-comment: #8e8e96;
+  --syntax-type: #0369a1;
+  --syntax-function: #a16207;
+}
+
+[data-theme="dark"] {
+  --background: #0b0b0d;
+  --surface: #111114;
+  --surface-2: #16161a;
+  --surface-sunken: #0e0e11;
+  --border: #24242a;
+  --border-strong: #33333a;
+  --foreground: #ececef;
+  --muted-foreground: #92929b;
+  --subtle-foreground: #5f5f68;
+
+  --success: #34d399;
+  --success-soft: rgb(52 211 153 / 0.08);
+  --warning: #fbbf24;
+  --warning-soft: rgb(251 191 36 / 0.08);
+  --danger: #f87171;
+  --danger-foreground: #1c0505;
+  --danger-soft: rgb(248 113 113 / 0.08);
+
+  --env-development: #38bdf8;
+  --env-staging: #fbbf24;
+  --env-production: #f87171;
+
+  --grid-line: rgb(255 255 255 / 0.035);
+
+  --syntax-keyword: #ff8a47;
+  --syntax-string: #86efac;
+  --syntax-number: #c4b5fd;
+  --syntax-comment: #6b6b74;
+  --syntax-type: #7dd3fc;
+  --syntax-function: #fcd34d;
+}
+
+/* Accent: orange (default). White text on the light-theme orange keeps ~4.6:1 contrast;
+   the dark theme uses a brighter orange with near-black text instead. */
+[data-accent="orange"] {
+  --primary: #cc4b08;
+  --primary-hover: #b54207;
+  --primary-foreground: #ffffff;
+  --primary-soft: rgb(234 88 12 / 0.08);
+  --primary-text: #c2410c;
+}
+[data-theme="dark"][data-accent="orange"] {
+  --primary: #ff6a14;
+  --primary-hover: #ff8236;
+  --primary-foreground: #160900;
+  --primary-soft: rgb(255 106 20 / 0.1);
+  --primary-text: #ff8a47;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-text: var(--primary-text);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-danger-soft: var(--danger-soft);
+  --color-env-development: var(--env-development);
+  --color-env-staging: var(--env-staging);
+  --color-env-production: var(--env-production);
+
+  --font-sans: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "Cascadia Mono", Consolas, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  /* Everything clickable shows a pointer. Disabled controls keep the default arrow. */
+  button:not(:disabled):not([aria-disabled="true"]),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="tab"],
+  [role="menuitem"]:not([data-disabled]),
+  [role="option"]:not([data-disabled]),
+  [role="radio"],
+  [role="checkbox"],
+  select,
+  summary,
+  label:has(> [role="checkbox"]) {
+    cursor: pointer;
+  }
+  ::selection {
+    background: var(--primary-soft);
+    color: var(--foreground);
+  }
+  /* Thin, square scrollbars that match the theme. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+}
+
+@layer utilities {
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Tooltips: a short fade + slide from the side they open on; quicker fade out. */
+[data-slot="tooltip-content"] {
+  --tt-x: 0px;
+  --tt-y: 0px;
+  transform-origin: var(--radix-tooltip-content-transform-origin);
+  will-change: transform, opacity;
+}
+[data-slot="tooltip-content"][data-side="bottom"] {
+  --tt-y: -4px;
+}
+[data-slot="tooltip-content"][data-side="top"] {
+  --tt-y: 4px;
+}
+[data-slot="tooltip-content"][data-side="right"] {
+  --tt-x: -4px;
+}
+[data-slot="tooltip-content"][data-side="left"] {
+  --tt-x: 4px;
+}
+[data-slot="tooltip-content"][data-state="delayed-open"],
+[data-slot="tooltip-content"][data-state="instant-open"] {
+  animation: tooltip-in 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+[data-slot="tooltip-content"][data-state="closed"] {
+  animation: tooltip-out 80ms ease-in forwards;
+}
+@keyframes tooltip-in {
+  from {
+    opacity: 0;
+    transform: translate(var(--tt-x), var(--tt-y)) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+}
+@keyframes tooltip-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}

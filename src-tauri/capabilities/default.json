@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Least-privilege permissions for the main window. Add only what a feature needs.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-connections-list",
+    "allow-connections-test",
+    "allow-connections-save",
+    "allow-connections-delete",
+    "allow-connections-disconnect",
+    "allow-schema-database",
+    "allow-schema-list",
+    "allow-schema-objects",
+    "allow-schema-relation",
+    "allow-schema-completion",
+    "allow-query-execute",
+    "allow-query-preview",
+    "allow-request-cancel"
+  ]
+}

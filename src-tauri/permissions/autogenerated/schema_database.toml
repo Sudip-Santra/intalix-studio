@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-schema-database"
+description = "Enables the schema_database command without any pre-configured scope."
+commands.allow = ["schema_database"]
+
+[[permission]]
+identifier = "deny-schema-database"
+description = "Denies the schema_database command without any pre-configured scope."
+commands.deny = ["schema_database"]

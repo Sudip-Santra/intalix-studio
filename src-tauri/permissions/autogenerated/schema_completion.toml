@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-schema-completion"
+description = "Enables the schema_completion command without any pre-configured scope."
+commands.allow = ["schema_completion"]
+
+[[permission]]
+identifier = "deny-schema-completion"
+description = "Denies the schema_completion command without any pre-configured scope."
+commands.deny = ["schema_completion"]
