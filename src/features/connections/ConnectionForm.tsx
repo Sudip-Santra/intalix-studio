@@ -168,7 +168,7 @@ export function ConnectionForm({ profile, onSaved }: Props) {
         }
       }}
     >
-      <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+      <div className="min-h-0 flex-1 [scrollbar-gutter:stable] overflow-y-auto">
         <div className="mx-auto w-full max-w-[760px] px-10 pt-10 pb-12">
           <header className="flex items-start justify-between gap-6">
             <div>
