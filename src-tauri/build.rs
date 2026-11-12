@@ -14,6 +14,9 @@ const COMMANDS: &[&str] = &[
     "query_execute",
     "query_preview",
     "request_cancel",
+    "templates_list",
+    "templates_save",
+    "templates_delete",
 ];
 
 fn main() {

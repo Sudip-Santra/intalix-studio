@@ -256,6 +256,22 @@ export type QueryOutcome =
     };
 
 /* ------------------------------------------------------------------------------------------
+ * Report templates
+ * ---------------------------------------------------------------------------------------- */
+
+/**
+ * A saved report template. `definition` is the versioned template JSON; the templates feature
+ * owns its shape and normalises it on load (see src/features/templates/model.ts).
+ */
+export interface StoredTemplate {
+  id: string;
+  name: string;
+  definition: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/* ------------------------------------------------------------------------------------------
  * Client
  * ---------------------------------------------------------------------------------------- */
 
@@ -295,5 +311,12 @@ export interface IntalixClient {
       options: { rowLimit: number },
       signal?: AbortSignal,
     ): Promise<QueryOutcome>;
+  };
+  templates: {
+    /** Templates the user has saved, most recently changed first. */
+    list(): Promise<StoredTemplate[]>;
+    /** Creates a template, or replaces the one with `id`. */
+    save(name: string, definition: unknown, id?: string): Promise<StoredTemplate>;
+    remove(id: string): Promise<void>;
   };
 }

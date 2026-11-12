@@ -19,6 +19,7 @@ import type {
   ConnectionTestResult,
   IntalixClient,
   SaveConnectionResult,
+  StoredTemplate,
 } from "./types";
 import {
   findRelation,
@@ -203,4 +204,54 @@ export const mockClient: IntalixClient = {
       };
     },
   },
+
+  templates: {
+    async list() {
+      await wait(120);
+      return loadMockTemplates();
+    },
+
+    async save(name, definition, id) {
+      await wait(150);
+      const list = loadMockTemplates();
+      const now = new Date().toISOString();
+      const existing = id ? list.find((t) => t.id === id) : undefined;
+      if (id && !existing) throw new Error("This template no longer exists.");
+      const saved: StoredTemplate = {
+        id: existing?.id ?? crypto.randomUUID(),
+        name: name.trim(),
+        // Stored as a copy so later edits in the UI cannot change the saved version.
+        definition: structuredClone(definition),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+      storeMockTemplates([saved, ...list.filter((t) => t.id !== saved.id)]);
+      return structuredClone(saved);
+    },
+
+    async remove(id) {
+      await wait(100);
+      storeMockTemplates(loadMockTemplates().filter((t) => t.id !== id));
+    },
+  },
 };
+
+/** Browser previews keep templates in localStorage so they survive a reload. */
+const TEMPLATES_KEY = "intalix.simulated.templates";
+
+function loadMockTemplates(): StoredTemplate[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(TEMPLATES_KEY) ?? "[]");
+    return Array.isArray(parsed) ? (parsed as StoredTemplate[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function storeMockTemplates(list: StoredTemplate[]) {
+  try {
+    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(list));
+  } catch {
+    // Storage may be unavailable or full; the preview simply won't persist.
+  }
+}

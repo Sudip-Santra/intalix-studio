@@ -95,4 +95,10 @@ export const tauriClient: IntalixClient = {
     preview: (connectionId, schema, name, { rowLimit }, signal) =>
       cancellable("query_preview", { connectionId, schema, name, rowLimit }, signal),
   },
+
+  templates: {
+    list: () => call("templates_list"),
+    save: (name, definition, id) => call("templates_save", { draft: { name, definition }, id: id ?? null }),
+    remove: (id) => call("templates_delete", { id }),
+  },
 };

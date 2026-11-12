@@ -17,6 +17,9 @@
     "allow-schema-completion",
     "allow-query-execute",
     "allow-query-preview",
-    "allow-request-cancel"
+    "allow-request-cancel",
+    "allow-templates-list",
+    "allow-templates-save",
+    "allow-templates-delete"
   ]
 }

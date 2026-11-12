@@ -13,6 +13,7 @@ use sqlx::sqlite::{
 
 use crate::error::{AppError, AppResult};
 use crate::model::{ConnectionDraft, ConnectionProfile, Environment, SslMode};
+use crate::templates::{ReportTemplate, SCHEMA_VERSION};
 
 #[derive(Clone)]
 pub struct Store {
@@ -138,6 +139,85 @@ impl Store {
             .await?;
         Ok(())
     }
+
+    /* ------------------------------------ templates ------------------------------------ */
+
+    pub async fn list_templates(&self) -> AppResult<Vec<ReportTemplate>> {
+        let rows = sqlx::query("SELECT * FROM report_templates ORDER BY updated_at DESC")
+            .fetch_all(&self.pool)
+            .await?;
+        // One damaged row must not hide every other template.
+        Ok(rows
+            .iter()
+            .filter_map(|r| match row_to_template(r) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping unreadable template");
+                    None
+                }
+            })
+            .collect())
+    }
+
+    pub async fn get_template(&self, id: &str) -> AppResult<ReportTemplate> {
+        let row = sqlx::query("SELECT * FROM report_templates WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| AppError::not_found("This template no longer exists."))?;
+        row_to_template(&row)
+    }
+
+    pub async fn count_templates(&self) -> AppResult<i64> {
+        Ok(sqlx::query_scalar("SELECT COUNT(*) FROM report_templates")
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
+    /// `definition` must already be validated JSON.
+    pub async fn upsert_template(
+        &self,
+        id: &str,
+        name: &str,
+        definition: &str,
+    ) -> AppResult<ReportTemplate> {
+        let now = now_iso();
+        sqlx::query(
+            "INSERT INTO report_templates (id, name, schema_version, definition, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET name = excluded.name, schema_version = excluded.schema_version, \
+                 definition = excluded.definition, updated_at = excluded.updated_at",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(i64::try_from(SCHEMA_VERSION).unwrap_or(1))
+        .bind(definition)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.get_template(id).await
+    }
+
+    pub async fn delete_template(&self, id: &str) -> AppResult<()> {
+        sqlx::query("DELETE FROM report_templates WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+fn row_to_template(r: &sqlx::sqlite::SqliteRow) -> AppResult<ReportTemplate> {
+    let definition: String = r.try_get("definition")?;
+    Ok(ReportTemplate {
+        id: r.try_get("id")?,
+        name: r.try_get("name")?,
+        definition: serde_json::from_str(&definition)
+            .map_err(|e| AppError::internal("reading template", e))?,
+        created_at: r.try_get("created_at")?,
+        updated_at: r.try_get("updated_at")?,
+    })
 }
 
 fn row_to_profile(r: &sqlx::sqlite::SqliteRow) -> AppResult<ConnectionProfile> {
@@ -221,5 +301,40 @@ mod tests {
 
         store.delete_profile("a").await.unwrap();
         assert!(store.get_profile("a").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn templates_round_trip() {
+        let store = Store::in_memory().await.unwrap();
+        let first = store
+            .upsert_template(
+                "t1",
+                "Corporate",
+                r#"{"schemaVersion":1,"page":{"size":"A4"}}"#,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.name, "Corporate");
+        assert_eq!(first.definition["page"]["size"], "A4");
+
+        let renamed = store
+            .upsert_template("t1", "Corporate Blue", r#"{"schemaVersion":1}"#)
+            .await
+            .unwrap();
+        assert_eq!(renamed.name, "Corporate Blue");
+        assert_eq!(renamed.created_at, first.created_at);
+        assert_eq!(store.count_templates().await.unwrap(), 1);
+
+        // The database refuses anything that is not JSON.
+        assert!(
+            store
+                .upsert_template("t2", "Bad", "not json")
+                .await
+                .is_err()
+        );
+
+        store.delete_template("t1").await.unwrap();
+        assert!(store.list_templates().await.unwrap().is_empty());
+        assert!(store.get_template("t1").await.is_err());
     }
 }

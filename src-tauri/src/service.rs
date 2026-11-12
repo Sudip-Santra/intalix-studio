@@ -14,6 +14,9 @@ use crate::pg::connect::{PoolHandle, Pools, map_pool_error, test_connection};
 use crate::pg::{introspect, query};
 use crate::secrets::Secrets;
 use crate::storage::Store;
+use crate::templates::{
+    MAX_TEMPLATES, ReportTemplate, TemplateDraft, validate_draft, validate_template_id,
+};
 
 pub struct AppState {
     pub store: Store,
@@ -172,6 +175,47 @@ impl AppState {
     pub async fn disconnect(&self, id: &str) -> AppResult<()> {
         validate_profile_id(id)?;
         self.pools.invalidate(id).await;
+        Ok(())
+    }
+
+    /* ------------------------------------ templates ------------------------------------ */
+
+    pub async fn list_templates(&self) -> AppResult<Vec<ReportTemplate>> {
+        self.store.list_templates().await
+    }
+
+    /// Creates a template (no `id`) or replaces an existing one.
+    pub async fn save_template(
+        &self,
+        draft: TemplateDraft,
+        id: Option<String>,
+    ) -> AppResult<ReportTemplate> {
+        let (name, definition) = validate_draft(&draft)?;
+        let id = match id {
+            Some(id) => {
+                validate_template_id(&id)?;
+                // Updating must not silently recreate a template that was deleted.
+                self.store.get_template(&id).await?;
+                id
+            }
+            None => {
+                if self.store.count_templates().await? >= MAX_TEMPLATES {
+                    return Err(AppError::invalid(format!(
+                        "You can keep up to {MAX_TEMPLATES} templates. Delete some to make room."
+                    )));
+                }
+                uuid::Uuid::new_v4().to_string()
+            }
+        };
+        let saved = self.store.upsert_template(&id, &name, &definition).await?;
+        tracing::info!(template = %id, "template saved");
+        Ok(saved)
+    }
+
+    pub async fn delete_template(&self, id: &str) -> AppResult<()> {
+        validate_template_id(id)?;
+        self.store.delete_template(id).await?;
+        tracing::info!(template = %id, "template deleted");
         Ok(())
     }
 

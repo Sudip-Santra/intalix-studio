@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { BarChart3, Database, History, Lock, Plus } from "lucide-react";
+import { BarChart3, Database, History, LayoutTemplate, Lock, Plus, type LucideIcon } from "lucide-react";
 import {
   client,
   type CompletionCatalog,
@@ -21,6 +21,9 @@ import { RelationTab } from "./RelationTab";
 import { hasUnsavedWork, initialTabsState, tabsReducer } from "./tabs-state";
 import { WorkspaceContext, type WorkspaceApi } from "./workspace-context";
 import { SEPARATOR_CLASS } from "./styles";
+import { TemplatesPage } from "@/features/templates/TemplatesPage";
+
+type Section = "explorer" | "templates";
 
 type WorkspacePageProps = {
   profile: ConnectionProfile;
@@ -31,6 +34,9 @@ type WorkspacePageProps = {
 
 export function WorkspacePage({ profile, onSwitch, onManageConnections, onDisconnect }: WorkspacePageProps) {
   const [state, dispatch] = useReducer(tabsReducer, initialTabsState);
+  const [section, setSection] = useState<Section>("explorer");
+  // The templates page mounts on first visit and then stays mounted, so drafts survive switching.
+  const [templatesOpened, setTemplatesOpened] = useState(false);
   const [database, setDatabase] = useState<DatabaseInfo | null>(null);
   const [catalog, setCatalog] = useState<CompletionCatalog>();
   /** Tabs waiting for "discard unsaved work?" confirmation before closing. */
@@ -94,7 +100,7 @@ export function WorkspacePage({ profile, onSwitch, onManageConnections, onDiscon
   // App-wide tab shortcuts.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
+      if (!(e.ctrlKey || e.metaKey) || section !== "explorer") return;
       const key = e.key.toLowerCase();
       if (key === "t" && !e.shiftKey) {
         e.preventDefault();
@@ -109,7 +115,7 @@ export function WorkspacePage({ profile, onSwitch, onManageConnections, onDiscon
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [state.activeId, requestClose]);
+  }, [state.activeId, requestClose, section]);
 
   const pendingDirty = state.tabs.filter((t) => pendingClose?.includes(t.id) && hasUnsavedWork(t));
   const pendingSingle = pendingClose?.length === 1 ? state.tabs.find((t) => t.id === pendingClose[0]) : undefined;
@@ -118,8 +124,20 @@ export function WorkspacePage({ profile, onSwitch, onManageConnections, onDiscon
     <WorkspaceContext.Provider value={api}>
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex min-h-0 flex-1">
-          <IconRail />
-          <Group orientation="horizontal" className="min-w-0 flex-1">
+          <IconRail
+            section={section}
+            onSelect={(next) => {
+              if (next === "templates") setTemplatesOpened(true);
+              setSection(next);
+            }}
+          />
+          {templatesOpened && (
+            <div hidden={section !== "templates"} className="min-w-0 flex-1">
+              <TemplatesPage active={section === "templates"} />
+            </div>
+          )}
+          {/* Kept mounted while hidden so editors, results and tabs survive switching sections. */}
+          <Group orientation="horizontal" className={cn("min-w-0 flex-1", section !== "explorer" && "hidden!")}>
             <Panel defaultSize={300} minSize={220} maxSize="45%">
               <SchemaExplorer database={database} />
             </Panel>
@@ -194,34 +212,43 @@ export function WorkspacePage({ profile, onSwitch, onManageConnections, onDiscon
   );
 }
 
-function IconRail() {
-  const items = [
-    { icon: Database, label: "Database explorer", active: true },
-    { icon: BarChart3, label: "Reports (coming soon)", active: false },
-    { icon: History, label: "Run history (coming soon)", active: false },
+function IconRail({ section, onSelect }: { section: Section; onSelect: (section: Section) => void }) {
+  const items: { icon: LucideIcon; label: string; section?: Section }[] = [
+    { icon: Database, label: "Database Explorer", section: "explorer" },
+    { icon: LayoutTemplate, label: "Report Templates", section: "templates" },
+    { icon: BarChart3, label: "Reports (coming soon)" },
+    { icon: History, label: "Run History (coming soon)" },
   ];
   return (
     <nav
       aria-label="Sections"
       className="flex w-11 shrink-0 flex-col items-center border-r border-border bg-surface py-1.5"
     >
-      {items.map(({ icon: Icon, label, active }) => (
-        <Tooltip key={label} content={label} side="right">
-          <button
-            type="button"
-            aria-label={label}
-            aria-current={active ? "page" : undefined}
-            aria-disabled={!active}
-            className={cn(
-              "relative flex h-10 w-11 items-center justify-center outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--primary)]",
-              active ? "text-foreground" : "cursor-default text-subtle-foreground hover:text-muted-foreground",
-            )}
-          >
-            {active && <span className="absolute inset-y-2 left-0 w-0.5 bg-primary" />}
-            <Icon className="size-[18px]" strokeWidth={1.75} />
-          </button>
-        </Tooltip>
-      ))}
+      {items.map(({ icon: Icon, label, section: target }) => {
+        const active = target !== undefined && target === section;
+        return (
+          <Tooltip key={label} content={label} side="right">
+            <button
+              type="button"
+              aria-label={label}
+              aria-current={active ? "page" : undefined}
+              aria-disabled={target === undefined}
+              onClick={() => target && onSelect(target)}
+              className={cn(
+                "relative flex h-10 w-11 items-center justify-center outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--primary)]",
+                active
+                  ? "text-foreground"
+                  : target
+                    ? "text-muted-foreground hover:text-foreground"
+                    : "cursor-default text-subtle-foreground hover:text-muted-foreground",
+              )}
+            >
+              {active && <span className="absolute inset-y-2 left-0 w-0.5 bg-primary" />}
+              <Icon className="size-[18px]" strokeWidth={1.75} />
+            </button>
+          </Tooltip>
+        );
+      })}
     </nav>
   );
 }

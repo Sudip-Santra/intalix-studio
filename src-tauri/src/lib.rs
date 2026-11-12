@@ -9,6 +9,7 @@ mod pg;
 mod secrets;
 mod service;
 mod storage;
+mod templates;
 mod window;
 
 use tauri::Manager;
@@ -66,6 +67,9 @@ pub fn run() {
             commands::query_execute,
             commands::query_preview,
             commands::request_cancel,
+            commands::templates_list,
+            commands::templates_save,
+            commands::templates_delete,
         ])
         .run(tauri::generate_context!());
 

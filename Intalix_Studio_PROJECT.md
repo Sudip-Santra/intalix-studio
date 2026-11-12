@@ -1345,7 +1345,46 @@ this section wins.
 | SQL workspace: editor with PostgreSQL syntax and schema autocomplete, run selection, cancel, row limit, typed result grid, read-only statement guard | UI done, simulated backend |
 | Right-click menus (pgAdmin-style, read-only items) on explorer, tabs and result grid; browser menu suppressed | UI done |
 | Real backend: connections, credential storage, schema introspection, read-only query execution, cancellation | Done, tested against PostgreSQL 17 |
-| Command allow-list: the window may call only the 13 declared backend commands | Done |
+| Command allow-list: the window may call only the 16 declared backend commands | Done |
+| Report template designer: built-in templates, live true-size preview with real pagination, full design settings, save/duplicate/delete | Done, stored in local SQLite |
+
+### 24.3.1 Report templates (2026-11-12)
+
+-   **Where:** the workspace icon rail has a Report Templates section
+    (`src/features/templates`). It stays mounted when you switch back to
+    the explorer, so unsaved edits survive.
+-   **Designer, not drag-and-drop:** a settings panel (Page, Colors &
+    Fonts, Header, Table, Numbers & Dates, Footer, Watermark)
+    next to a live preview of the first and last page on sample data.
+    Rows per page are measured from the real layout, so the page count
+    in the footer is honest for the chosen fonts and spacing.
+-   **No summary figures:** templates show no stat cards above the
+    table (user decision). The organization name is not printed above
+    the title; it appears through `{organization}` in the footer and in
+    the logo initials. Margins: narrow 7 mm, normal 11 mm, wide 16 mm.
+-   **Built-in templates** (Corporate, Modern, Minimal, Executive,
+    Finance Ledger, Print Friendly) are read-only starting points.
+    Changing one and saving creates the user's own copy.
+-   **Definition:** versioned JSON (`schemaVersion: 1`) described in
+    `model.ts`. Every stored definition goes through
+    `normalizeDefinition`, which fills missing fields and replaces
+    invalid values with defaults, so an older or damaged template still
+    opens. Templates never contain SQL, connections or data.
+-   **Formats:** numbers are formatted from exact decimal strings (no
+    floating point), with Western, Indian (12,34,567.89), European and
+    space grouping, 0-4 decimals, a currency symbol and three negative
+    styles. Header and footer text accept `{title}`, `{organization}`,
+    `{date}`, `{time}`, `{page}` and `{pages}`.
+-   **Logo:** PNG, JPEG or WebP up to 1 MB, embedded in the definition
+    as a data URL. SVG is refused because it can carry scripts. Without
+    a logo, a monogram of the organization name is shown.
+-   **Storage:** `report_templates` table (migration 0002), commands
+    `templates_list`, `templates_save`, `templates_delete`. The backend
+    checks the id (UUID), name (1-80 characters, no control
+    characters), schema version, logo type and size, a 2 MB definition
+    cap and a 500-template limit; SQLite enforces `json_valid`.
+-   **Fonts:** Inter is bundled; Segoe UI, Arial, Calibri, Georgia and
+    Cambria come from Windows. PDF export must embed the chosen font.
 
 ### 24.4 Notes for the backend
 

@@ -11,6 +11,7 @@ use crate::model::{
     RelationDetail, SaveConnectionResult, SchemaObjects, SchemaSummary,
 };
 use crate::service::AppState;
+use crate::templates::{ReportTemplate, TemplateDraft};
 
 #[tauri::command]
 pub async fn connections_list(state: State<'_, AppState>) -> AppResult<Vec<ConnectionProfile>> {
@@ -120,4 +121,23 @@ pub async fn query_preview(
 #[tauri::command]
 pub async fn request_cancel(state: State<'_, AppState>, request_id: String) -> AppResult<()> {
     state.cancel(&request_id).await
+}
+
+#[tauri::command]
+pub async fn templates_list(state: State<'_, AppState>) -> AppResult<Vec<ReportTemplate>> {
+    state.list_templates().await
+}
+
+#[tauri::command]
+pub async fn templates_save(
+    state: State<'_, AppState>,
+    draft: TemplateDraft,
+    id: Option<String>,
+) -> AppResult<ReportTemplate> {
+    state.save_template(draft, id).await
+}
+
+#[tauri::command]
+pub async fn templates_delete(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.delete_template(&id).await
 }
