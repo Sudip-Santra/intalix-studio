@@ -1,5 +1,5 @@
 import { useMemo, useRef } from "react";
-import CodeMirror, { EditorView, keymap, Prec } from "@uiw/react-codemirror";
+import CodeMirror, { EditorView, keymap, Prec, type Extension } from "@uiw/react-codemirror";
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
@@ -49,6 +49,53 @@ const editorTheme = EditorView.theme({
   ".cm-completionDetail": { color: "var(--subtle-foreground)", fontStyle: "normal", marginLeft: "12px" },
   ".cm-completionIcon": { opacity: "0.6", width: "1.2em" },
   ".cm-placeholder": { color: "var(--subtle-foreground)" },
+  // {{variables}}
+  ".cm-sql-variable": {
+    color: "var(--primary-text)",
+    backgroundColor: "color-mix(in srgb, var(--primary) 12%, transparent)",
+    fontWeight: "500",
+  },
+  // Diagnostics
+  ".cm-lintRange-error": {
+    backgroundImage: "none",
+    textDecoration: "underline wavy var(--danger)",
+    textDecorationSkipInk: "none",
+    textUnderlineOffset: "3px",
+  },
+  ".cm-lintRange-warning": {
+    backgroundImage: "none",
+    textDecoration: "underline wavy var(--warning)",
+    textDecorationSkipInk: "none",
+    textUnderlineOffset: "3px",
+  },
+  ".cm-tooltip-lint": { maxWidth: "460px" },
+  ".cm-diagnostic": {
+    padding: "6px 10px 6px 12px",
+    fontFamily: "var(--font-sans)",
+    fontSize: "12px",
+    whiteSpace: "pre-wrap",
+    borderLeftWidth: "2px",
+  },
+  ".cm-diagnostic-error": { borderLeftColor: "var(--danger)" },
+  ".cm-diagnostic-warning": { borderLeftColor: "var(--warning)" },
+  ".cm-diagnosticSource": { color: "var(--subtle-foreground)", fontSize: "11px", marginTop: "2px" },
+  ".cm-gutter-lint": { width: "14px" },
+  ".cm-gutter-lint .cm-gutterElement": { padding: "0 2px" },
+  ".cm-lint-marker": { width: "8px", height: "8px", marginTop: "6px", content: "none" },
+  ".cm-lint-marker-error": { backgroundColor: "var(--danger)", backgroundImage: "none" },
+  ".cm-lint-marker-warning": { backgroundColor: "var(--warning)", backgroundImage: "none" },
+  // Signature help
+  ".cm-sql-signature": { padding: "6px 10px", maxWidth: "520px", fontSize: "12px" },
+  ".cm-sql-signature-label": { fontFamily: "var(--font-mono)" },
+  ".cm-sql-signature-active": { color: "var(--primary-text)", fontWeight: "600" },
+  ".cm-sql-signature-more": {
+    fontFamily: "var(--font-mono)",
+    color: "var(--subtle-foreground)",
+    whiteSpace: "pre-wrap",
+    marginTop: "2px",
+  },
+  ".cm-sql-signature-doc": { color: "var(--muted-foreground)", marginTop: "4px", fontFamily: "var(--font-sans)" },
+  ".cm-completionInfo": { padding: "6px 10px", fontSize: "12px", maxWidth: "360px" },
 });
 
 const highlight = HighlightStyle.define([
@@ -68,6 +115,11 @@ type Props = {
   /** Called on Ctrl+Enter with the selected text, or the whole document when nothing is selected. */
   onRun?: (sql: string) => void;
   catalog?: CompletionCatalog;
+  /**
+   * The backend language service (see `language.ts`). When given it replaces the built-in,
+   * schema-only completion; `catalog` is then ignored. Must be stable across renders.
+   */
+  language?: Extension;
   defaultSchema?: string;
   readOnly?: boolean;
   placeholder?: string;
@@ -82,6 +134,7 @@ export function SqlEditor({
   onChange,
   onRun,
   catalog,
+  language,
   defaultSchema = "public",
   readOnly = false,
   placeholder,
@@ -95,8 +148,10 @@ export function SqlEditor({
   const canRun = Boolean(onRun);
 
   const extensions = useMemo(() => {
-    const exts = [
-      sql({ dialect: PostgreSQL, schema: catalog ?? {}, defaultSchema, upperCaseKeywords: true }),
+    const exts: Extension[] = [
+      language
+        ? sql({ dialect: PostgreSQL, upperCaseKeywords: true })
+        : sql({ dialect: PostgreSQL, schema: catalog ?? {}, defaultSchema, upperCaseKeywords: true }),
       syntaxHighlighting(highlight),
       editorTheme,
       EditorView.contentAttributes.of({ "aria-label": ariaLabel }),
@@ -116,8 +171,9 @@ export function SqlEditor({
         ),
       );
     }
+    if (language && !readOnly) exts.push(language);
     return exts;
-  }, [catalog, defaultSchema, canRun, ariaLabel]);
+  }, [catalog, language, readOnly, defaultSchema, canRun, ariaLabel]);
 
   return (
     <CodeMirror
@@ -141,7 +197,8 @@ export function SqlEditor({
         foldGutter: false,
         highlightActiveLine: !readOnly,
         highlightActiveLineGutter: !readOnly,
-        autocompletion: !readOnly,
+        // The language service brings its own completion.
+        autocompletion: !readOnly && !language,
         bracketMatching: true,
         closeBrackets: !readOnly,
         searchKeymap: true,

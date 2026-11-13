@@ -6,11 +6,17 @@ use std::collections::BTreeMap;
 use tauri::State;
 
 use crate::error::AppResult;
+use crate::lang::analyze::Analysis;
+use crate::lang::complete::{Completions, SignatureHelp};
+use crate::lang::variables::VariableDef;
 use crate::model::{
     ConnectionDraft, ConnectionProfile, ConnectionTestResult, DatabaseInfo, QueryOutcome,
     RelationDetail, SaveConnectionResult, SchemaObjects, SchemaSummary,
 };
-use crate::service::AppState;
+use crate::pg::variables::CheckOutcome;
+use crate::report::{PreviewOutcome, ReportOutcome, ReportRequest};
+use crate::saved_queries::{SavedQuery, SavedQueryDraft};
+use crate::service::{AppState, OptionsOutcome};
 use crate::templates::{ReportTemplate, TemplateDraft};
 
 #[tauri::command]
@@ -140,4 +146,155 @@ pub async fn templates_save(
 #[tauri::command]
 pub async fn templates_delete(state: State<'_, AppState>, id: String) -> AppResult<()> {
     state.delete_template(&id).await
+}
+
+#[tauri::command]
+pub async fn queries_list(state: State<'_, AppState>) -> AppResult<Vec<SavedQuery>> {
+    state.list_saved_queries().await
+}
+
+#[tauri::command]
+pub async fn queries_save(
+    state: State<'_, AppState>,
+    draft: SavedQueryDraft,
+    id: Option<String>,
+) -> AppResult<SavedQuery> {
+    state.save_query(draft, id).await
+}
+
+#[tauri::command]
+pub async fn queries_delete(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.delete_saved_query(&id).await
+}
+
+/// Async so a large document is never analysed on the UI thread.
+#[tauri::command]
+pub async fn sql_analyze(
+    state: State<'_, AppState>,
+    sql: String,
+    variables: Option<Vec<VariableDef>>,
+) -> AppResult<Analysis> {
+    state.sql_analyze(&sql, variables)
+}
+
+#[tauri::command]
+pub async fn sql_complete(
+    state: State<'_, AppState>,
+    connection_id: String,
+    sql: String,
+    cursor: usize,
+    variables: Option<Vec<VariableDef>>,
+) -> AppResult<Completions> {
+    state
+        .sql_complete(&connection_id, &sql, cursor, variables)
+        .await
+}
+
+#[tauri::command]
+pub async fn sql_signature(
+    state: State<'_, AppState>,
+    connection_id: String,
+    sql: String,
+    cursor: usize,
+) -> AppResult<Option<SignatureHelp>> {
+    state.sql_signature(&connection_id, &sql, cursor).await
+}
+
+#[tauri::command]
+pub async fn sql_refresh_catalog(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> AppResult<()> {
+    state.sql_refresh_catalog(&connection_id).await
+}
+
+#[tauri::command]
+pub async fn sql_check(
+    state: State<'_, AppState>,
+    request_id: String,
+    connection_id: String,
+    sql: String,
+    variables: Vec<VariableDef>,
+) -> AppResult<CheckOutcome> {
+    state
+        .sql_check(&request_id, &connection_id, &sql, variables)
+        .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn sql_run(
+    state: State<'_, AppState>,
+    request_id: String,
+    connection_id: String,
+    sql: String,
+    variables: Vec<VariableDef>,
+    values: BTreeMap<String, serde_json::Value>,
+    row_limit: u32,
+) -> AppResult<QueryOutcome> {
+    state
+        .sql_run(
+            &request_id,
+            &connection_id,
+            &sql,
+            variables,
+            values,
+            row_limit,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn sql_variable_options(
+    state: State<'_, AppState>,
+    request_id: String,
+    connection_id: String,
+    sql: String,
+) -> AppResult<OptionsOutcome> {
+    state
+        .variable_options(&request_id, &connection_id, &sql)
+        .await
+}
+
+#[tauri::command]
+pub async fn sql_column_values(
+    state: State<'_, AppState>,
+    request_id: String,
+    connection_id: String,
+    sql: String,
+    variable: String,
+) -> AppResult<OptionsOutcome> {
+    state
+        .column_values(&request_id, &connection_id, &sql, &variable)
+        .await
+}
+
+#[tauri::command]
+pub async fn report_generate(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request_id: String,
+    connection_id: String,
+    request: ReportRequest,
+) -> AppResult<ReportOutcome> {
+    state
+        .generate_report(&app, &request_id, &connection_id, request)
+        .await
+}
+
+#[tauri::command]
+pub async fn report_preview(
+    state: State<'_, AppState>,
+    request_id: String,
+    connection_id: String,
+    request: ReportRequest,
+) -> AppResult<PreviewOutcome> {
+    state
+        .preview_report(&request_id, &connection_id, request)
+        .await
+}
+
+#[tauri::command]
+pub async fn report_open(state: State<'_, AppState>, path: String, reveal: bool) -> AppResult<()> {
+    state.open_report(&path, reveal).await
 }

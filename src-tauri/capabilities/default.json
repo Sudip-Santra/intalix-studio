@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Least-privilege permissions for the main window. Add only what a feature needs.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "allow-connections-list",
@@ -20,6 +22,20 @@
     "allow-request-cancel",
     "allow-templates-list",
     "allow-templates-save",
-    "allow-templates-delete"
+    "allow-templates-delete",
+    "allow-queries-list",
+    "allow-queries-save",
+    "allow-queries-delete",
+    "allow-sql-analyze",
+    "allow-sql-complete",
+    "allow-sql-signature",
+    "allow-sql-refresh-catalog",
+    "allow-sql-check",
+    "allow-sql-run",
+    "allow-sql-variable-options",
+    "allow-sql-column-values",
+    "allow-report-generate",
+    "allow-report-open",
+    "allow-report-preview"
   ]
 }

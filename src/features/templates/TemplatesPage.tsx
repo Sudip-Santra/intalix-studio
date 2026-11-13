@@ -344,7 +344,7 @@ function ListHeading({ children }: { children: string }) {
 }
 
 /** Tiny page sketch in the template's colours, so templates are recognisable at a glance. */
-function Thumbnail({ definition: d }: { definition: TemplateDefinition }) {
+export function Thumbnail({ definition: d }: { definition: TemplateDefinition }) {
   const band = d.header.style === "band";
   const filled = d.table.headerStyle === "filled";
   const landscape = d.page.orientation === "landscape";

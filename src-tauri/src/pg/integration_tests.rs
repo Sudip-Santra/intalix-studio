@@ -18,11 +18,17 @@ use tokio_postgres::config::Host;
 
 use crate::error::ErrorCategory;
 use crate::jobs::Jobs;
+use crate::lang::variables::{
+    OptionItem, OptionsSource, VariableDef, VariableType, resolve_values,
+};
 use crate::model::{
     Cell, ConnectionTarget, ConnectionTestResult, QueryOutcome, RelationKind, SslMode,
 };
 use crate::pg::connect::{Pools, test_connection};
+use crate::pg::variables::CheckOutcome;
 use crate::pg::{introspect, query};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 struct Env {
     target: ConnectionTarget,
@@ -93,6 +99,18 @@ CREATE MATERIALIZED VIEW intalix_it.order_counts AS SELECT customer_id, count(*)
 CREATE FUNCTION intalix_it.add_one(x integer) RETURNS integer LANGUAGE sql AS 'SELECT x + 1';
 INSERT INTO intalix_it.customers (code, "Display Name", credit, segment)
 SELECT 'C' || g, 'Customer ' || g, g * 10.5, CASE WHEN g % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(1, 50) g;
+CREATE TYPE intalix_it.invoice_status AS ENUM ('open', 'paid', 'void');
+CREATE TABLE intalix_it.invoices (
+    id int PRIMARY KEY,
+    status intalix_it.invoice_status NOT NULL,
+    issued date NOT NULL,
+    amount numeric(12,2) NOT NULL,
+    region text NOT NULL
+);
+INSERT INTO intalix_it.invoices
+SELECT g, (ARRAY['open', 'paid', 'void'])[1 + g % 3]::intalix_it.invoice_status, DATE '2026-01-01' + g,
+       g * 10.25, CASE WHEN g % 2 = 0 THEN 'north' ELSE 'south' END
+FROM generate_series(1, 60) g;
 "#;
 
 fn ok(outcome: QueryOutcome) -> crate::model::QueryResultSet {
@@ -597,6 +615,28 @@ async fn against_real_postgres() {
     let preview = ok(run_preview(&handle, &jobs).await);
     assert_eq!(preview.rows.len(), 6); // limit 5 + 1 look-ahead row, trimmed by the service layer
 
+    // --- SQL Editor: language catalog and variables -----------------------------------
+    let lang = introspect::language_catalog(&mut client).await.unwrap();
+    let invoices = lang
+        .find_relation(Some("intalix_it"), "invoices")
+        .expect("invoices in the language catalog");
+    assert_eq!(invoices.columns[1].name, "status");
+    assert!(invoices.columns[1].data_type.ends_with("invoice_status"));
+    assert_eq!(invoices.columns[3].data_type, "numeric(12,2)");
+    assert!(
+        lang.routines
+            .iter()
+            .any(|r| r.schema == "intalix_it" && r.name == "add_one" && r.arguments == "x integer")
+    );
+    let status_column = crate::lang::columns::compared_column(
+        &crate::lang::lexer::lex("SELECT * FROM intalix_it.invoices i WHERE i.status IN ({{s}})"),
+        &lang,
+        "s",
+    )
+    .expect("multi-select column found");
+    assert_eq!(status_column.label(), "intalix_it.invoices.status");
+    variable_steps(&handle, &jobs).await;
+
     // --- Cleanup ----------------------------------------------------------------------
     drop(client);
     pools.invalidate("it").await;
@@ -670,4 +710,316 @@ async fn tls_required_but_server_has_tls_off() {
         ConnectionTestResult::Ok(s) => assert_eq!(s.tls, None),
         ConnectionTestResult::Failed(f) => panic!("prefer should connect: {}", f.message),
     }
+}
+
+fn var(name: &str, kind: VariableType, choices: &[&str]) -> VariableDef {
+    let options = (!choices.is_empty()).then(|| OptionsSource::List {
+        values: choices
+            .iter()
+            .map(|c| OptionItem {
+                value: (*c).to_owned(),
+                label: String::new(),
+            })
+            .collect(),
+    });
+    VariableDef {
+        name: name.into(),
+        label: String::new(),
+        kind,
+        required: false,
+        default: Value::Null,
+        options,
+        help: String::new(),
+    }
+    .required_flag(true)
+}
+
+trait RequiredFlag {
+    fn required_flag(self, on: bool) -> Self;
+}
+
+impl RequiredFlag for VariableDef {
+    fn required_flag(mut self, on: bool) -> Self {
+        self.required = on;
+        self
+    }
+}
+
+async fn run_vars(
+    handle: &crate::pg::connect::PoolHandle,
+    jobs: &Jobs,
+    sql: &str,
+    defs: &[VariableDef],
+    values: Value,
+) -> QueryOutcome {
+    let values: BTreeMap<String, Value> = serde_json::from_value(values).unwrap();
+    let bound = resolve_values(defs, &values).unwrap();
+    jobs.register("vars");
+    let outcome = crate::pg::variables::run(handle, jobs, "vars", sql, defs, &bound, 1000).await;
+    jobs.finish("vars");
+    outcome.unwrap()
+}
+
+async fn check_vars(
+    handle: &crate::pg::connect::PoolHandle,
+    jobs: &Jobs,
+    sql: &str,
+    defs: &[VariableDef],
+) -> CheckOutcome {
+    jobs.register("check");
+    let outcome = crate::pg::variables::check(handle, jobs, "check", sql, defs).await;
+    jobs.finish("check");
+    outcome.unwrap()
+}
+
+fn single_int(outcome: QueryOutcome) -> String {
+    match &ok(outcome).rows[0][0] {
+        Cell::Int { v } => v.clone(),
+        other => panic!("expected an integer, got {other:?}"),
+    }
+}
+
+/// `{{variables}}` end to end: inference, binding, NULL for empty filters, injection safety,
+/// error positions and the read-only policy.
+async fn variable_steps(handle: &crate::pg::connect::PoolHandle, jobs: &Jobs) {
+    let defs = vec![
+        var("period", VariableType::DateRange, &[]),
+        var("region", VariableType::Enum, &["north", "south"]),
+        var("status", VariableType::MultiEnum, &["open", "paid", "void"]),
+        var("min", VariableType::Number, &[]),
+    ];
+    let sql = "SELECT count(*) AS n FROM intalix_it.invoices \
+               WHERE issued BETWEEN {{period.from}} AND {{period.to}} \
+                 AND ({{region}} IS NULL OR region = {{region}}) \
+                 AND status = ANY({{status}}) \
+                 AND amount >= {{min}}";
+    let january = json!({
+        "period": {"from": "2026-01-01", "to": "2026-01-31"},
+        "region": "north",
+        "status": ["open", "paid"],
+        "min": "50",
+    });
+    assert_eq!(
+        single_int(run_vars(handle, jobs, sql, &defs, january).await),
+        "9"
+    );
+
+    // Required unchecked switches the filter off, even with a value: all regions.
+    let mut region_off = defs.clone();
+    region_off[1] = region_off[1].clone().required_flag(false);
+    let any_region = json!({
+        "period": {"from": "2026-01-01", "to": "2026-01-31"},
+        "region": "north",
+        "status": ["open", "paid"],
+        "min": "50",
+    });
+    assert_eq!(
+        single_int(run_vars(handle, jobs, sql, &region_off, any_region).await),
+        "17"
+    );
+
+    // The check reports the types PostgreSQL will use, including the enum array.
+    match check_vars(handle, jobs, sql, &defs).await {
+        CheckOutcome::Ok(c) => {
+            assert_eq!(c.columns[0].name, "n");
+            let types: Vec<(String, String)> = c
+                .parameters
+                .into_iter()
+                .map(|p| (p.reference, p.pg_type))
+                .collect();
+            assert!(
+                types.contains(&("period.from".into(), "date".into())),
+                "{types:?}"
+            );
+            assert!(
+                types.contains(&("status".into(), "invoice_status[]".into())),
+                "{types:?}"
+            );
+            assert!(
+                types.contains(&("region".into(), "text".into())),
+                "{types:?}"
+            );
+            assert!(
+                types.contains(&("min".into(), "numeric".into())),
+                "{types:?}"
+            );
+        }
+        CheckOutcome::Failed(f) => panic!("check failed: {}", f.message),
+    }
+
+    // A not-required variable left empty skips its condition instead of comparing with NULL.
+    let skip_sql =
+        "SELECT count(*) FROM intalix_it.invoices WHERE region = {{region}} AND amount >= {{min}}";
+    assert_eq!(
+        single_int(run_vars(handle, jobs, skip_sql, &region_off, json!({"min": "600"})).await),
+        "2"
+    );
+
+    // Values can't change the query: a quote is just part of the text.
+    let text = vec![var("q", VariableType::Text, &[])];
+    let injected = run_vars(
+        handle,
+        jobs,
+        "SELECT count(*) FROM intalix_it.invoices WHERE region = {{q}}",
+        &text,
+        json!({"q": "north' OR '1'='1"}),
+    )
+    .await;
+    assert_eq!(single_int(injected), "0");
+
+    // Inference retries a parameter PostgreSQL can't type on its own.
+    let echo = ok(run_vars(
+        handle,
+        jobs,
+        "SELECT {{q}} AS echo",
+        &text,
+        json!({"q": "it's"}),
+    )
+    .await);
+    assert!(matches!(&echo.rows[0][0], Cell::Text { v, .. } if v == "it's"));
+
+    // A single enum value against an enum column, and a number used by LIMIT.
+    let one = vec![var("st", VariableType::Enum, &["open", "paid", "void"])];
+    let paid = run_vars(
+        handle,
+        jobs,
+        "SELECT count(*) FROM intalix_it.invoices WHERE status = {{st}}",
+        &one,
+        json!({"st": "paid"}),
+    )
+    .await;
+    assert_eq!(single_int(paid), "20");
+    let n = vec![var("n", VariableType::Number, &[])];
+    let limited = ok(run_vars(
+        handle,
+        jobs,
+        "SELECT id FROM intalix_it.invoices ORDER BY id LIMIT {{n}}",
+        &n,
+        json!({"n": "3"}),
+    )
+    .await);
+    assert_eq!(limited.rows.len(), 3);
+
+    // `IN ({{list}})` works like `= ANY(…)`, and NOT IN like `<> ALL(…)`.
+    let statuses = vec![var("status", VariableType::MultiEnum, &[])];
+    let in_list = run_vars(
+        handle,
+        jobs,
+        "SELECT count(*) FROM intalix_it.invoices WHERE status IN ({{status}})",
+        &statuses,
+        json!({"status": ["paid", "void"]}),
+    )
+    .await;
+    assert_eq!(single_int(in_list), "40");
+    let not_in = run_vars(
+        handle,
+        jobs,
+        "SELECT count(*) FROM intalix_it.invoices WHERE status NOT IN ({{status}})",
+        &statuses,
+        json!({"status": ["paid", "void"]}),
+    )
+    .await;
+    assert_eq!(single_int(not_in), "20");
+
+    // A list compared with = gets a clear message pointing at the variable.
+    let list = vec![var("status", VariableType::MultiEnum, &["open"])];
+    let in_sql = "SELECT 1 FROM intalix_it.invoices WHERE status = {{status}}";
+    match check_vars(handle, jobs, in_sql, &list).await {
+        CheckOutcome::Failed(f) => {
+            assert_eq!(f.category, ErrorCategory::QueryRejected);
+            assert!(f.hint.unwrap_or_default().contains("IN ("));
+            assert_eq!(f.position, Some(in_sql.find("{{").unwrap() as u32 + 1));
+        }
+        CheckOutcome::Ok(_) => panic!("= with a list must be rejected"),
+    }
+
+    // Server errors point at the source SQL, not the rewritten one.
+    let bad = "SELECT {{min}} + nope FROM intalix_it.invoices";
+    match check_vars(handle, jobs, bad, &defs).await {
+        CheckOutcome::Failed(f) => {
+            assert_eq!(f.category, ErrorCategory::UndefinedObject);
+            assert_eq!(f.position, Some(bad.find("nope").unwrap() as u32 + 1));
+        }
+        CheckOutcome::Ok(_) => panic!("unknown column must fail"),
+    }
+
+    // A report streams the full result into PDF and Excel files.
+    let mut prepared = crate::report::prepare(&crate::report::ReportRequest {
+        title: "Invoices".into(),
+        sql: "SELECT id, issued, region, status::text AS status, amount FROM intalix_it.invoices ORDER BY id".into(),
+        variables: vec![],
+        values: BTreeMap::new(),
+        template: json!({}),
+        pdf: true,
+        xlsx: true,
+    })
+    .unwrap();
+    jobs.register("report");
+    let fetched = crate::pg::variables::stream(
+        handle,
+        jobs,
+        "report",
+        "SELECT id, issued, region, status::text AS status, amount FROM intalix_it.invoices ORDER BY id",
+        &[],
+        &BTreeMap::new(),
+        prepared.max_rows,
+        &mut prepared.sink,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    jobs.finish("report");
+    assert_eq!(fetched.rows, 60);
+    let totals: Vec<String> = prepared
+        .sink
+        .data
+        .totals_row()
+        .unwrap()
+        .into_iter()
+        .map(|f| f.text)
+        .collect();
+    // 10.25 × (1 + … + 60) = 18,757.50; ids aren't totalled.
+    assert_eq!(totals.last().map(String::as_str), Some("18,757.50"));
+    assert_eq!(totals[0], "Total");
+    let dir = std::env::temp_dir().join(format!("intalix-it-report-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let xlsx = prepared.sink.take_xlsx().unwrap();
+    crate::report::write_xlsx(xlsx, &prepared.sink.data, &dir.join("r.xlsx")).unwrap();
+    let pages =
+        crate::report::write_pdf(&prepared.sink.data, &prepared.template, &dir.join("r.pdf"))
+            .unwrap()
+            .pages;
+    assert!(pages >= 2);
+    assert!(
+        std::fs::read(dir.join("r.pdf"))
+            .unwrap()
+            .starts_with(b"%PDF")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // The read-only policy still applies.
+    let write = check_vars(
+        handle,
+        jobs,
+        "DELETE FROM intalix_it.invoices WHERE id = {{min}}",
+        &defs,
+    )
+    .await;
+    assert!(
+        matches!(&write, CheckOutcome::Failed(f) if f.category == ErrorCategory::QueryRejected),
+        "{write:?}"
+    );
+    assert_eq!(
+        single_int(
+            run_vars(
+                handle,
+                jobs,
+                "SELECT count(*) FROM intalix_it.invoices",
+                &[],
+                json!({}),
+            )
+            .await
+        ),
+        "60"
+    );
 }

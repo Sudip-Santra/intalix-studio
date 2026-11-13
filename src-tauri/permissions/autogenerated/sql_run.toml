@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sql-run"
+description = "Enables the sql_run command without any pre-configured scope."
+commands.allow = ["sql_run"]
+
+[[permission]]
+identifier = "deny-sql-run"
+description = "Denies the sql_run command without any pre-configured scope."
+commands.deny = ["sql_run"]

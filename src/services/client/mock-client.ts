@@ -31,6 +31,16 @@ import {
   relationDetail,
 } from "./mock/catalog";
 import { simulateQuery, wait } from "./mock/query";
+import {
+  loadMockQueries,
+  mockAnalyze,
+  mockCheck,
+  mockComplete,
+  mockRun,
+  mockVariableOptions,
+  removeMockQuery,
+  saveMockQuery,
+} from "./mock/sql";
 
 const profiles: ConnectionProfile[] = [];
 
@@ -234,7 +244,105 @@ export const mockClient: IntalixClient = {
       storeMockTemplates(loadMockTemplates().filter((t) => t.id !== id));
     },
   },
+
+  queries: {
+    async list() {
+      await wait(120);
+      return loadMockQueries();
+    },
+    async save(draft, id) {
+      await wait(150);
+      return saveMockQuery(draft, id);
+    },
+    async remove(id) {
+      await wait(100);
+      removeMockQuery(id);
+    },
+  },
+
+  reports: {
+    async generate(_connectionId, request, signal) {
+      await wait(1400, signal);
+      const stem = request.title.trim() || "Report";
+      const files = [
+        ...(request.pdf
+          ? [
+              {
+                format: "pdf" as const,
+                path: `C:\Reports\${stem}.pdf`,
+                name: `${stem}.pdf`,
+                sizeBytes: 182_400,
+                pages: 4,
+              },
+            ]
+          : []),
+        ...(request.xlsx
+          ? [
+              {
+                format: "xlsx" as const,
+                path: `C:\Reports\${stem}.xlsx`,
+                name: `${stem}.xlsx`,
+                sizeBytes: 64_900,
+                pages: null,
+              },
+            ]
+          : []),
+      ];
+      return { ok: true, files, rows: 128, warnings: [], durationMs: 1400 };
+    },
+    async preview(_connectionId, request, signal) {
+      await wait(700, signal);
+      const page = (request.template as { page?: { orientation?: string } } | null)?.page;
+      const landscape = page?.orientation === "landscape";
+      return {
+        ok: true,
+        pages: [mockPage(request.title, landscape, 1), mockPage(request.title, landscape, 2)],
+        pageCount: 3,
+        rows: 128,
+        moreRows: false,
+        shortened: false,
+        crowded: false,
+        durationMs: 700,
+      };
+    },
+    async open() {
+      await wait(100);
+    },
+  },
+
+  sql: {
+    analyze: async (sql, variables) => mockAnalyze(sql, variables),
+    complete: async (_connectionId, sql, cursor, variables) => mockComplete(sql, cursor, variables),
+    signature: async () => null,
+    refreshCatalog: () => wait(200),
+    check: (_connectionId, sql, variables, signal) => mockCheck(sql, variables, signal),
+    run: (_connectionId, sql, variables, values, { rowLimit }, signal) =>
+      mockRun(sql, variables, values, rowLimit, signal),
+    variableOptions: (_connectionId, sql, signal) => mockVariableOptions(sql, signal),
+    columnValues: async (_connectionId, _sql, variable, signal) => {
+      const outcome = await mockVariableOptions("SELECT 1", signal);
+      return outcome.ok ? { ...outcome, column: `public.simulated.${variable}` } : outcome;
+    },
+  },
 };
+
+/** A placeholder report page (the real preview is drawn by the backend). */
+function mockPage(title: string, landscape: boolean, n: number): string {
+  const [w, h] = landscape ? [842, 595] : [595, 842];
+  const escape = (s: string) => s.replace(/[<>&"]/g, (c) => `&#${c.charCodeAt(0)};`);
+  const rows = Array.from({ length: Math.floor((h - 190) / 22) }, (_, i) => {
+    const y = 150 + i * 22;
+    return `<rect x="40" y="${y}" width="${w - 80}" height="22" fill="${i % 2 ? "#f3f5f8" : "#fff"}"/>`;
+  }).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+<rect width="100%" height="100%" fill="#fff"/>
+${n === 1 ? `<text x="40" y="70" font-family="sans-serif" font-size="22" font-weight="700" fill="#1f2937">${escape(title || "Report")}</text>` : ""}
+<rect x="40" y="120" width="${w - 80}" height="30" fill="#1e3a5f"/>${rows}
+<text x="${w / 2}" y="${h / 2}" text-anchor="middle" font-family="sans-serif" font-size="16" fill="#9ca3af">Simulated preview</text>
+<text x="${w - 40}" y="${h - 24}" text-anchor="end" font-family="sans-serif" font-size="9" fill="#6b7280">Page ${n} of 3</text>
+</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
 
 /** Browser previews keep templates in localStorage so they survive a reload. */
 const TEMPLATES_KEY = "intalix.simulated.templates";

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-queries-save"
+description = "Enables the queries_save command without any pre-configured scope."
+commands.allow = ["queries_save"]
+
+[[permission]]
+identifier = "deny-queries-save"
+description = "Denies the queries_save command without any pre-configured scope."
+commands.deny = ["queries_save"]

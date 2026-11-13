@@ -513,7 +513,7 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultColumn {
     pub name: String,
@@ -558,9 +558,9 @@ pub struct QueryFailure {
     pub simulated: bool,
 }
 
-impl QueryOutcome {
-    pub fn failed(error: AppError, duration_ms: u64) -> Self {
-        Self::Failed(QueryFailure {
+impl QueryFailure {
+    pub fn from_error(error: AppError, duration_ms: u64) -> Self {
+        Self {
             ok: false,
             category: error.category,
             message: error.message,
@@ -568,7 +568,13 @@ impl QueryOutcome {
             position: error.position,
             duration_ms,
             simulated: false,
-        })
+        }
+    }
+}
+
+impl QueryOutcome {
+    pub fn failed(error: AppError, duration_ms: u64) -> Self {
+        Self::Failed(QueryFailure::from_error(error, duration_ms))
     }
 }
 

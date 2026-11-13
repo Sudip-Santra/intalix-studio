@@ -1,17 +1,37 @@
 //! Application services: the logic behind each command. Commands stay thin wrappers.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use secrecy::{ExposeSecret, SecretString};
+use serde::Serialize;
+use serde_json::Value;
 
 use crate::error::{AppError, AppResult, ErrorCategory};
 use crate::jobs::{Jobs, validate_request_id};
+use crate::lang::analyze::{Analysis, VariableMode, analyze};
+use crate::lang::catalog::{Catalog, Catalogs};
+use crate::lang::columns::compared_column;
+use crate::lang::complete::{Completions, SignatureHelp, complete, signature};
+use crate::lang::lexer::{Kind, lex};
+use crate::lang::variables::{
+    MAX_LOOKUP_SQL_BYTES, OptionItem, VariableDef, resolve_values, validate_definitions,
+};
 use crate::model::{
-    ConnectionDraft, ConnectionProfile, ConnectionTarget, ConnectionTestResult, DatabaseInfo,
-    QueryOutcome, RelationDetail, SaveConnectionResult, SchemaObjects, SchemaSummary,
+    Cell, ConnectionDraft, ConnectionProfile, ConnectionTarget, ConnectionTestResult, DatabaseInfo,
+    QueryFailure, QueryOutcome, RelationDetail, SaveConnectionResult, SchemaObjects, SchemaSummary,
 };
 use crate::pg::connect::{PoolHandle, Pools, map_pool_error, test_connection};
+use crate::pg::variables::CheckOutcome;
 use crate::pg::{introspect, query};
+use crate::report::{
+    self, PreviewOutcome, PreviewSuccess, ReportOutcome, ReportRequest, ReportSuccess,
+};
+use crate::saved_queries::{
+    MAX_SAVED_QUERIES, SavedQuery, SavedQueryDraft, validate_draft as validate_query_draft,
+    validate_query_id,
+};
 use crate::secrets::Secrets;
 use crate::storage::Store;
 use crate::templates::{
@@ -23,7 +43,36 @@ pub struct AppState {
     pub secrets: Secrets,
     pub pools: Pools,
     pub jobs: Jobs,
+    /// Database names for SQL hints, per connection.
+    pub catalogs: Catalogs,
+    /// Report files written in this session; only these can be opened from the UI.
+    pub generated: std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
 }
+
+/// Choices for an enum variable, from its lookup query.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum OptionsOutcome {
+    Ok(OptionsSuccess),
+    Failed(QueryFailure),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionsSuccess {
+    pub ok: bool,
+    pub options: Vec<OptionItem>,
+    /// True when the query returned more rows than are offered.
+    pub truncated: bool,
+    /// For a Multi-select filled from a column: `schema.table.column`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+}
+
+/// Most choices a lookup query can offer.
+const MAX_LOOKUP_OPTIONS: u32 = 1000;
+/// How long hints wait for the catalog before answering without it.
+const CATALOG_WAIT: Duration = Duration::from_secs(4);
 
 /// Profile ids are UUIDs we generated; anything else is rejected before touching storage.
 fn validate_profile_id(id: &str) -> AppResult<()> {
@@ -156,6 +205,7 @@ impl AppState {
             .await?;
         // Settings may have changed; the next use builds a fresh pool.
         self.pools.invalidate(&id).await;
+        self.catalogs.invalidate(&id);
         tracing::info!(profile = %id, env = draft.environment.as_str(), "connection saved");
         Ok(SaveConnectionResult {
             test,
@@ -166,6 +216,7 @@ impl AppState {
     pub async fn delete_connection(&self, id: &str) -> AppResult<()> {
         validate_profile_id(id)?;
         self.pools.invalidate(id).await;
+        self.catalogs.invalidate(id);
         self.secrets.forget(id)?;
         self.store.delete_profile(id).await?;
         tracing::info!(profile = %id, "connection deleted");
@@ -175,6 +226,7 @@ impl AppState {
     pub async fn disconnect(&self, id: &str) -> AppResult<()> {
         validate_profile_id(id)?;
         self.pools.invalidate(id).await;
+        self.catalogs.invalidate(id);
         Ok(())
     }
 
@@ -217,6 +269,514 @@ impl AppState {
         self.store.delete_template(id).await?;
         tracing::info!(template = %id, "template deleted");
         Ok(())
+    }
+
+    /* ---------------------------------- saved queries ---------------------------------- */
+
+    pub async fn list_saved_queries(&self) -> AppResult<Vec<SavedQuery>> {
+        self.store.list_saved_queries().await
+    }
+
+    /// Creates a saved query (no `id`) or replaces an existing one.
+    pub async fn save_query(
+        &self,
+        draft: SavedQueryDraft,
+        id: Option<String>,
+    ) -> AppResult<SavedQuery> {
+        let draft = validate_query_draft(draft)?;
+        let id = match id {
+            Some(id) => {
+                validate_query_id(&id)?;
+                // Updating must not silently recreate a query that was deleted.
+                self.store.get_saved_query(&id).await?;
+                id
+            }
+            None => {
+                if self.store.count_saved_queries().await? >= MAX_SAVED_QUERIES {
+                    return Err(AppError::invalid(format!(
+                        "You can keep up to {MAX_SAVED_QUERIES} saved queries. Delete some to make room."
+                    )));
+                }
+                uuid::Uuid::new_v4().to_string()
+            }
+        };
+        let saved = self.store.upsert_saved_query(&id, &draft).await?;
+        tracing::info!(query = %id, "saved query stored");
+        Ok(saved)
+    }
+
+    pub async fn delete_saved_query(&self, id: &str) -> AppResult<()> {
+        validate_query_id(id)?;
+        self.store.delete_saved_query(id).await?;
+        tracing::info!(query = %id, "saved query deleted");
+        Ok(())
+    }
+
+    /* ------------------------------ SQL language service ------------------------------ */
+
+    /// Instant offline checks. `variables` is `None` where variables are not available.
+    pub fn sql_analyze(
+        &self,
+        sql: &str,
+        variables: Option<Vec<VariableDef>>,
+    ) -> AppResult<Analysis> {
+        check_sql_size(sql)?;
+        let mode = match &variables {
+            Some(defs) => VariableMode::Defined(defs),
+            None => VariableMode::NotAvailable,
+        };
+        Ok(analyze(sql, mode))
+    }
+
+    /// The cached catalog, or an empty one if it can't be loaded quickly. Hints must never
+    /// wait long or fail because the catalog is unavailable.
+    async fn hint_catalog(&self, profile_id: &str) -> AppResult<Arc<Catalog>> {
+        validate_profile_id(profile_id)?;
+        let load = self.catalogs.get_or_load(profile_id, || async {
+            let mut client = self.client(profile_id).await?;
+            introspect::language_catalog(&mut client).await
+        });
+        Ok(match tokio::time::timeout(CATALOG_WAIT, load).await {
+            Ok(Ok(catalog)) => catalog,
+            Ok(Err(error)) => {
+                tracing::warn!(category = ?error.category, "catalog for hints unavailable");
+                Arc::new(Catalog::default())
+            }
+            Err(_) => Arc::new(Catalog::default()),
+        })
+    }
+
+    /// Forgets the cached catalog (e.g. after tables were added) and loads it again.
+    pub async fn sql_refresh_catalog(&self, profile_id: &str) -> AppResult<()> {
+        validate_profile_id(profile_id)?;
+        self.catalogs.invalidate(profile_id);
+        self.hint_catalog(profile_id).await.map(|_| ())
+    }
+
+    pub async fn sql_complete(
+        &self,
+        profile_id: &str,
+        sql: &str,
+        cursor: usize,
+        variables: Option<Vec<VariableDef>>,
+    ) -> AppResult<Completions> {
+        check_sql_size(sql)?;
+        let catalog = self.hint_catalog(profile_id).await?;
+        Ok(complete(sql, cursor, variables.as_deref(), &catalog))
+    }
+
+    pub async fn sql_signature(
+        &self,
+        profile_id: &str,
+        sql: &str,
+        cursor: usize,
+    ) -> AppResult<Option<SignatureHelp>> {
+        check_sql_size(sql)?;
+        let catalog = self.hint_catalog(profile_id).await?;
+        Ok(signature(sql, cursor, &catalog))
+    }
+
+    /// Runs `work` as a registered, cancellable request on the profile's pool. Pool and
+    /// profile errors become `on_error(error)`, so the UI shows them like query errors.
+    async fn pooled_request<T>(
+        &self,
+        request_id: &str,
+        profile_id: &str,
+        work: impl AsyncFnOnce(&PoolHandle) -> AppResult<T>,
+        on_error: impl FnOnce(AppError) -> T,
+    ) -> AppResult<T> {
+        validate_request_id(request_id)?;
+        self.jobs.register(request_id);
+        let result = async {
+            let handle = self.pool(profile_id).await?;
+            work(&handle).await
+        }
+        .await;
+        self.jobs.finish(request_id);
+        match result {
+            Err(error) if error.category != ErrorCategory::Cancelled => Ok(on_error(error)),
+            other => other,
+        }
+    }
+
+    /// Parses and analyses the query on the server without running it.
+    pub async fn sql_check(
+        &self,
+        request_id: &str,
+        profile_id: &str,
+        sql: &str,
+        variables: Vec<VariableDef>,
+    ) -> AppResult<CheckOutcome> {
+        let failed = |e: AppError| CheckOutcome::Failed(QueryFailure::from_error(e, 0));
+        if let Err(error) = validate_definitions(&variables) {
+            return Ok(failed(error));
+        }
+        self.pooled_request(
+            request_id,
+            profile_id,
+            async |handle| {
+                crate::pg::variables::check(handle, &self.jobs, request_id, sql, &variables).await
+            },
+            failed,
+        )
+        .await
+    }
+
+    /// Runs a SQL Editor query with its filter values.
+    pub async fn sql_run(
+        &self,
+        request_id: &str,
+        profile_id: &str,
+        sql: &str,
+        variables: Vec<VariableDef>,
+        values: BTreeMap<String, Value>,
+        row_limit: u32,
+    ) -> AppResult<QueryOutcome> {
+        let bound = match validate_definitions(&variables)
+            .and_then(|()| resolve_values(&variables, &values))
+        {
+            Ok(bound) => bound,
+            Err(error) => return Ok(QueryOutcome::failed(error, 0)),
+        };
+        self.pooled_request(
+            request_id,
+            profile_id,
+            async |handle| {
+                crate::pg::variables::run(
+                    handle, &self.jobs, request_id, sql, &variables, &bound, row_limit,
+                )
+                .await
+            },
+            |e| QueryOutcome::failed(e, 0),
+        )
+        .await
+    }
+
+    /// Distinct values of the column a Multi-select variable is compared with in `sql`,
+    /// e.g. `status` in `WHERE status IN ({{status}})`.
+    pub async fn column_values(
+        &self,
+        request_id: &str,
+        profile_id: &str,
+        sql: &str,
+        variable: &str,
+    ) -> AppResult<OptionsOutcome> {
+        check_sql_size(sql)?;
+        let catalog = self.hint_catalog(profile_id).await?;
+        let Some(column) = compared_column(&lex(sql), &catalog, &variable.to_lowercase()) else {
+            return Ok(OptionsOutcome::Failed(QueryFailure::from_error(
+                AppError::invalid(format!(
+                    "Couldn't tell which column {{{{{variable}}}}} filters."
+                ))
+                .with_hint(format!(
+                    "Compare it with a table column, e.g. status IN ({{{{{variable}}}}})."
+                )),
+                0,
+            )));
+        };
+        let values_sql = column.distinct_values_sql(MAX_LOOKUP_OPTIONS);
+        let mut outcome = self
+            .variable_options(request_id, profile_id, &values_sql)
+            .await?;
+        if let OptionsOutcome::Ok(success) = &mut outcome {
+            success.column = Some(column.label());
+        }
+        Ok(outcome)
+    }
+
+    /// Runs an enum variable's lookup query. Column 1 is the value, column 2 (optional) the
+    /// label shown in the filter.
+    pub async fn variable_options(
+        &self,
+        request_id: &str,
+        profile_id: &str,
+        sql: &str,
+    ) -> AppResult<OptionsOutcome> {
+        let failed = |e: AppError| OptionsOutcome::Failed(QueryFailure::from_error(e, 0));
+        if sql.len() > MAX_LOOKUP_SQL_BYTES {
+            return Ok(failed(AppError::invalid("The lookup query is too long.")));
+        }
+        let lexed = lex(sql);
+        if let Some(t) = lexed.tokens.iter().find(|t| t.kind == Kind::Variable) {
+            return Ok(failed(
+                AppError::new(
+                    ErrorCategory::QueryRejected,
+                    "Lookup queries can't use variables.",
+                )
+                .with_position(u32::try_from(t.start + 1).ok()),
+            ));
+        }
+        let outcome = self
+            .execute_query(request_id, profile_id, sql, MAX_LOOKUP_OPTIONS)
+            .await?;
+        Ok(match outcome {
+            QueryOutcome::Failed(f) => OptionsOutcome::Failed(f),
+            QueryOutcome::Ok(success) => {
+                let mut seen = std::collections::BTreeSet::new();
+                let options = success
+                    .result
+                    .rows
+                    .iter()
+                    .filter_map(|row| {
+                        let value = cell_text(row.first()?)?;
+                        let label = row.get(1).and_then(cell_text).unwrap_or_default();
+                        seen.insert(value.clone())
+                            .then_some(OptionItem { value, label })
+                    })
+                    .collect();
+                OptionsOutcome::Ok(OptionsSuccess {
+                    ok: true,
+                    options,
+                    truncated: success.result.truncated,
+                    column: None,
+                })
+            }
+        })
+    }
+
+    /* ------------------------------------- reports ------------------------------------- */
+
+    /// Runs a SQL Editor query in full and writes it as PDF and/or Excel with a template.
+    /// Asks where to save first; closing that dialog cancels.
+    pub async fn generate_report(
+        &self,
+        app: &tauri::AppHandle,
+        request_id: &str,
+        profile_id: &str,
+        request: ReportRequest,
+    ) -> AppResult<ReportOutcome> {
+        use tauri_plugin_dialog::DialogExt;
+
+        validate_request_id(request_id)?;
+        validate_profile_id(profile_id)?;
+        check_sql_size(&request.sql)?;
+        let started = std::time::Instant::now();
+        let failed = |e: AppError| {
+            Ok(ReportOutcome::Failed(QueryFailure::from_error(
+                e,
+                report::elapsed(started),
+            )))
+        };
+        if let Err(error) = validate_definitions(&request.variables) {
+            return failed(error);
+        }
+        let bound = match resolve_values(&request.variables, &request.values) {
+            Ok(bound) => bound,
+            Err(error) => return failed(error),
+        };
+        let mut prepared = match report::prepare(&request) {
+            Ok(p) => p,
+            Err(error) => return failed(error),
+        };
+
+        // Where to save. With both formats the Excel file goes next to the PDF.
+        let ext = if request.pdf { "pdf" } else { "xlsx" };
+        let dialog = app
+            .dialog()
+            .file()
+            .set_title("Save report")
+            .set_file_name(format!("{}.{ext}", report::file_stem(&prepared.title)))
+            .add_filter(
+                if request.pdf {
+                    "PDF report"
+                } else {
+                    "Excel workbook"
+                },
+                &[ext],
+            );
+        let chosen = tokio::task::spawn_blocking(move || dialog.blocking_save_file())
+            .await
+            .map_err(|e| AppError::internal("save dialog", e))?;
+        let Some(chosen) = chosen else {
+            return Err(AppError::cancelled());
+        };
+        let chosen = chosen
+            .into_path()
+            .map_err(|e| AppError::internal("save dialog path", e))?;
+        let (pdf_path, xlsx_path) = report::targets(&chosen, request.pdf, request.xlsx);
+
+        // Stream the rows into the report.
+        self.jobs.register(request_id);
+        let streamed = async {
+            let handle = self.pool(profile_id).await?;
+            crate::pg::variables::stream(
+                &handle,
+                &self.jobs,
+                request_id,
+                &request.sql,
+                &request.variables,
+                &bound,
+                prepared.max_rows,
+                &mut prepared.sink,
+            )
+            .await
+        }
+        .await;
+        self.jobs.finish(request_id);
+        let fetched = match streamed {
+            Err(error) if error.category == ErrorCategory::Cancelled => return Err(error),
+            Err(error) | Ok(Err(error)) => return failed(error),
+            Ok(Ok(fetched)) => fetched,
+        };
+
+        // Write the files. Layout and compression are CPU work, kept off the async threads.
+        let mut files = Vec::new();
+        let mut warnings = Vec::new();
+        let describe = |e: &AppError| match &e.hint {
+            Some(hint) => format!("{} {hint}", e.message),
+            None => e.message.clone(),
+        };
+        let xlsx = prepared.sink.take_xlsx();
+        let data = &prepared.sink.data;
+        if let (Some(path), Some(x)) = (&xlsx_path, xlsx) {
+            match tokio::task::block_in_place(|| report::write_xlsx(x, data, path)) {
+                Ok(()) => files.push(report::generated("xlsx", path, None)),
+                Err(e) => warnings.push(format!("Excel was not created. {}", describe(&e))),
+            }
+            if fetched.truncated {
+                warnings.push(format!(
+                    "The query returned more than {} rows; the Excel file has the first {}.",
+                    crate::report::EXCEL_MAX_ROWS,
+                    crate::report::EXCEL_MAX_ROWS
+                ));
+            }
+        }
+        if let Some(path) = &pdf_path {
+            if prepared.sink.pdf_overflow {
+                warnings.push(format!(
+                    "The PDF was not created: the report has more than {} rows. Use Excel for large reports, or narrow the filters.",
+                    crate::report::PDF_MAX_ROWS
+                ));
+            } else {
+                let template = &prepared.template;
+                match tokio::task::block_in_place(|| report::write_pdf(data, template, path)) {
+                    Ok(written) => {
+                        files.push(report::generated("pdf", path, Some(written.pages)));
+                        if written.shortened {
+                            warnings.push(report::SHORTENED_NOTE.to_owned());
+                        }
+                    }
+                    Err(e) => warnings.push(format!("The PDF was not created. {}", describe(&e))),
+                }
+            }
+        }
+        if files.is_empty() {
+            return failed(AppError::invalid(warnings.join(" ")));
+        }
+
+        let mut generated = self
+            .generated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for f in &files {
+            generated.insert(std::path::PathBuf::from(&f.path));
+        }
+        drop(generated);
+        tracing::info!(files = files.len(), rows = fetched.rows, "report generated");
+        Ok(ReportOutcome::Ok(ReportSuccess {
+            ok: true,
+            files,
+            rows: fetched.rows,
+            warnings,
+            duration_ms: report::elapsed(started),
+        }))
+    }
+
+    /// Runs the first rows of a SQL Editor query and draws the first PDF pages.
+    pub async fn preview_report(
+        &self,
+        request_id: &str,
+        profile_id: &str,
+        request: ReportRequest,
+    ) -> AppResult<PreviewOutcome> {
+        validate_request_id(request_id)?;
+        validate_profile_id(profile_id)?;
+        check_sql_size(&request.sql)?;
+        let started = std::time::Instant::now();
+        let failed = |e: AppError| {
+            Ok(PreviewOutcome::Failed(QueryFailure::from_error(
+                e,
+                report::elapsed(started),
+            )))
+        };
+        if let Err(error) = validate_definitions(&request.variables) {
+            return failed(error);
+        }
+        let bound = match resolve_values(&request.variables, &request.values) {
+            Ok(bound) => bound,
+            Err(error) => return failed(error),
+        };
+        let mut prepared = match report::prepare_preview(&request) {
+            Ok(p) => p,
+            Err(error) => return failed(error),
+        };
+
+        self.jobs.register(request_id);
+        let streamed = async {
+            let handle = self.pool(profile_id).await?;
+            crate::pg::variables::stream(
+                &handle,
+                &self.jobs,
+                request_id,
+                &request.sql,
+                &request.variables,
+                &bound,
+                prepared.max_rows,
+                &mut prepared.sink,
+            )
+            .await
+        }
+        .await;
+        self.jobs.finish(request_id);
+        let fetched = match streamed {
+            Err(error) if error.category == ErrorCategory::Cancelled => return Err(error),
+            Err(error) | Ok(Err(error)) => return failed(error),
+            Ok(Ok(fetched)) => fetched,
+        };
+
+        let data = &prepared.sink.data;
+        let template = &prepared.template;
+        match tokio::task::block_in_place(|| report::preview_pages(data, template)) {
+            Ok(drawn) => Ok(PreviewOutcome::Ok(PreviewSuccess {
+                ok: true,
+                pages: drawn.images,
+                page_count: drawn.page_count,
+                rows: fetched.rows,
+                more_rows: fetched.truncated,
+                shortened: drawn.shortened,
+                crowded: drawn.crowded,
+                duration_ms: report::elapsed(started),
+            })),
+            Err(error) => failed(error),
+        }
+    }
+
+    /// Opens a report written in this session, or shows it in File Explorer.
+    pub async fn open_report(&self, path: &str, reveal: bool) -> AppResult<()> {
+        let path = std::path::PathBuf::from(path);
+        let known = self
+            .generated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&path);
+        if !known {
+            return Err(AppError::invalid(
+                "Only reports created here can be opened.",
+            ));
+        }
+        if !path.exists() {
+            return Err(AppError::not_found("The report file was moved or deleted."));
+        }
+        tokio::task::spawn_blocking(move || {
+            if reveal {
+                tauri_plugin_opener::reveal_item_in_dir(&path)
+            } else {
+                tauri_plugin_opener::open_path(&path, None::<&str>)
+            }
+        })
+        .await
+        .map_err(|e| AppError::internal("opening the report", e))?
+        .map_err(|e| AppError::invalid("The report could not be opened.").with_hint(e.to_string()))
     }
 
     /* --------------------------------- pooled access --------------------------------- */
@@ -348,4 +908,36 @@ impl AppState {
         self.jobs.cancel(request_id).await;
         Ok(())
     }
+}
+
+fn check_sql_size(sql: &str) -> AppResult<()> {
+    if sql.len() > query::MAX_SQL_BYTES {
+        return Err(AppError::invalid("This query is too large (over 1 MB)."));
+    }
+    Ok(())
+}
+
+/// A cell as filter-choice text; `None` for NULL and values that can't be a choice.
+fn cell_text(cell: &Cell) -> Option<String> {
+    match cell {
+        Cell::Null | Cell::Bytes { .. } | Cell::Unsupported { .. } => None,
+        Cell::Text {
+            truncated: true, ..
+        }
+        | Cell::Json {
+            truncated: true, ..
+        } => None,
+        Cell::Bool { v } => Some(v.to_string()),
+        Cell::Float { v } => Some(v.to_string()),
+        Cell::Int { v }
+        | Cell::Decimal { v }
+        | Cell::Text { v, .. }
+        | Cell::Json { v, .. }
+        | Cell::Date { v }
+        | Cell::Time { v }
+        | Cell::Timestamp { v }
+        | Cell::Timestamptz { v }
+        | Cell::Uuid { v } => Some(v.clone()),
+    }
+    .filter(|v| !v.is_empty() && v.chars().count() <= 500)
 }

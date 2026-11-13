@@ -101,4 +101,29 @@ export const tauriClient: IntalixClient = {
     save: (name, definition, id) => call("templates_save", { draft: { name, definition }, id: id ?? null }),
     remove: (id) => call("templates_delete", { id }),
   },
+
+  queries: {
+    list: () => call("queries_list"),
+    save: (draft, id) => call("queries_save", { draft, id: id ?? null }),
+    remove: (id) => call("queries_delete", { id }),
+  },
+
+  reports: {
+    generate: (connectionId, request, signal) => cancellable("report_generate", { connectionId, request }, signal),
+    preview: (connectionId, request, signal) => cancellable("report_preview", { connectionId, request }, signal),
+    open: (path, reveal) => call("report_open", { path, reveal }),
+  },
+
+  sql: {
+    analyze: (sql, variables) => call("sql_analyze", { sql, variables }),
+    complete: (connectionId, sql, cursor, variables) => call("sql_complete", { connectionId, sql, cursor, variables }),
+    signature: (connectionId, sql, cursor) => call("sql_signature", { connectionId, sql, cursor }),
+    refreshCatalog: (connectionId) => call("sql_refresh_catalog", { connectionId }),
+    check: (connectionId, sql, variables, signal) => cancellable("sql_check", { connectionId, sql, variables }, signal),
+    run: (connectionId, sql, variables, values, { rowLimit }, signal) =>
+      cancellable("sql_run", { connectionId, sql, variables, values, rowLimit }, signal),
+    variableOptions: (connectionId, sql, signal) => cancellable("sql_variable_options", { connectionId, sql }, signal),
+    columnValues: (connectionId, sql, variable, signal) =>
+      cancellable("sql_column_values", { connectionId, sql, variable }, signal),
+  },
 };

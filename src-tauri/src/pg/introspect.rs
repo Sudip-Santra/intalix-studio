@@ -10,6 +10,7 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, Row};
 
 use crate::error::{AppError, AppResult};
+use crate::lang::catalog::{Catalog, Column as LangColumn, RelKind, Relation, Routine};
 use crate::model::{
     ColumnInfo, ConstraintInfo, ConstraintKind, ConstraintRef, DatabaseInfo, ForeignKeyRef,
     IndexInfo, RelationDetail, RelationKind, RelationSummary, RoutineKind, RoutineSummary,
@@ -22,6 +23,7 @@ const CATALOG_TIMEOUT: &str = "30s";
 const MAX_SCHEMAS: i64 = 10_000;
 const MAX_OBJECTS: i64 = 20_000;
 const MAX_COMPLETION_RELATIONS: i64 = 5_000;
+const MAX_COMPLETION_ROUTINES: i64 = 5_000;
 
 /// Runs one catalog query in a short read-only transaction.
 async fn catalog(
@@ -565,6 +567,99 @@ pub async fn completion_catalog(
             .insert(get(r, 1)?, get(r, 2)?);
     }
     Ok(out)
+}
+
+/// Names for the SQL language service: relations with column types, the user's functions
+/// (system schemas excluded; built-ins are documented in `lang::docs`), schemas and the
+/// search path.
+pub async fn language_catalog(client: &mut Client) -> AppResult<Catalog> {
+    let rows = catalog(
+        client,
+        "SELECT ARRAY(SELECT nspname::text FROM pg_namespace \
+                       WHERE nspname <> 'information_schema' AND nspname NOT LIKE 'pg\\_%' \
+                         AND has_schema_privilege(oid, 'USAGE') ORDER BY 1 LIMIT $1), \
+                current_schemas(false)::text[]",
+        &[&MAX_SCHEMAS],
+    )
+    .await?;
+    let row = rows
+        .first()
+        .ok_or_else(|| AppError::internal("language catalog", "no row"))?;
+    let schemas: Vec<String> = get(row, 0)?;
+    let search_path: Vec<String> = get(row, 1)?;
+
+    let rows = catalog(
+        client,
+        "SELECT n.nspname::text, c.relname::text, c.relkind::text, \
+                array_agg(a.attname::text ORDER BY a.attnum), \
+                array_agg(format_type(a.atttypid, a.atttypmod) ORDER BY a.attnum) \
+         FROM pg_class c \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+         WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition \
+           AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_toast%' \
+           AND has_schema_privilege(n.oid, 'USAGE') \
+         GROUP BY n.nspname, c.relname, c.relkind \
+         ORDER BY 1, 2 \
+         LIMIT $1",
+        &[&MAX_COMPLETION_RELATIONS],
+    )
+    .await?;
+    let mut relations = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let kind = match get::<String>(r, 2)?.as_str() {
+            "v" => RelKind::View,
+            "m" => RelKind::MaterializedView,
+            "f" => RelKind::ForeignTable,
+            _ => RelKind::Table,
+        };
+        let names: Vec<String> = get(r, 3)?;
+        let types: Vec<String> = get(r, 4)?;
+        relations.push(Relation {
+            schema: get(r, 0)?,
+            name: get(r, 1)?,
+            kind,
+            columns: names
+                .into_iter()
+                .zip(types)
+                .map(|(name, data_type)| LangColumn { name, data_type })
+                .collect(),
+        });
+    }
+
+    let rows = catalog(
+        client,
+        "SELECT n.nspname::text, p.proname::text, pg_get_function_arguments(p.oid), \
+                COALESCE(pg_get_function_result(p.oid), ''), p.prokind = 'a' \
+         FROM pg_proc p \
+         JOIN pg_namespace n ON n.oid = p.pronamespace \
+         WHERE p.prokind IN ('f', 'a') \
+           AND n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\\_%' \
+           AND has_schema_privilege(n.oid, 'USAGE') \
+         ORDER BY 1, 2 \
+         LIMIT $1",
+        &[&MAX_COMPLETION_ROUTINES],
+    )
+    .await?;
+    let routines = rows
+        .iter()
+        .map(|r| {
+            Ok(Routine {
+                schema: get(r, 0)?,
+                name: get(r, 1)?,
+                arguments: get(r, 2)?,
+                result: get(r, 3)?,
+                aggregate: get(r, 4)?,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+
+    Ok(Catalog {
+        search_path,
+        schemas,
+        relations,
+        routines,
+    })
 }
 
 #[cfg(test)]

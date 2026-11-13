@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sql-complete"
+description = "Enables the sql_complete command without any pre-configured scope."
+commands.allow = ["sql_complete"]
+
+[[permission]]
+identifier = "deny-sql-complete"
+description = "Denies the sql_complete command without any pre-configured scope."
+commands.deny = ["sql_complete"]

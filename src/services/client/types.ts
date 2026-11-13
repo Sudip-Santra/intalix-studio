@@ -272,6 +272,192 @@ export interface StoredTemplate {
 }
 
 /* ------------------------------------------------------------------------------------------
+ * SQL Editor: variables, saved queries and the language service
+ * ---------------------------------------------------------------------------------------- */
+
+export const VARIABLE_TYPES = ["text", "number", "date", "date_range", "enum", "multi_enum"] as const;
+export type VariableType = (typeof VARIABLE_TYPES)[number];
+
+export interface VariableOption {
+  value: string;
+  /** Shown instead of the value when not empty. */
+  label: string;
+}
+
+export type VariableOptionsSource =
+  | { source: "list"; values: VariableOption[] }
+  /** Read-only lookup query: column 1 is the value, optional column 2 the label. */
+  | { source: "query"; sql: string };
+
+export interface DateRangeValue {
+  from: string;
+  to: string;
+}
+
+/**
+ * A filter value. Text, number (as a decimal string), date (YYYY-MM-DD) and enum take a string;
+ * multi-select enum takes a string array; a date range takes `{ from, to }`. `null`, "" and []
+ * mean "no value", which binds NULL for optional variables.
+ */
+export type VariableValue = string | string[] | DateRangeValue | null;
+
+/** A `{{name}}` variable. Mirrors `VariableDef` in src-tauri/src/lang/variables.rs. */
+export interface VariableDef {
+  name: string;
+  label: string;
+  type: VariableType;
+  required: boolean;
+  default: VariableValue;
+  /** Only for enum and multi-select enum. */
+  options: VariableOptionsSource | null;
+  help: string;
+}
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  description: string;
+  sql: string;
+  variables: VariableDef[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SavedQueryDraft {
+  name: string;
+  description: string;
+  sql: string;
+  variables: VariableDef[];
+}
+
+/** Offsets are UTF-16 code units, exactly as the editor counts them. */
+export interface SqlDiagnostic {
+  from: number;
+  to: number;
+  severity: "error" | "warning";
+  message: string;
+  hint: string | null;
+}
+
+export interface SqlVariableReference {
+  name: string;
+  /** "from" / "to" for date ranges. */
+  part: string | null;
+  from: number;
+  to: number;
+}
+
+export interface SqlAnalysis {
+  diagnostics: SqlDiagnostic[];
+  references: SqlVariableReference[];
+  statements: number;
+}
+
+export type SqlCompletionKind =
+  "keyword" | "function" | "table" | "view" | "column" | "schema" | "type" | "variable" | "alias";
+
+export interface SqlCompletionItem {
+  label: string;
+  kind: SqlCompletionKind;
+  detail: string | null;
+  info: string | null;
+  /** Text to insert instead of the label. */
+  apply: string | null;
+  /** `apply` is a snippet where `${}` marks the cursor position. */
+  snippet: boolean;
+  boost: number;
+}
+
+export interface SqlCompletions {
+  from: number;
+  items: SqlCompletionItem[];
+}
+
+export interface SqlSignatureHelp {
+  name: string;
+  signatures: string[];
+  parameters: string[];
+  activeParameter: number;
+  description: string;
+}
+
+export interface SqlParameterInfo {
+  /** `region`, or `period.from` for half of a date range. */
+  reference: string;
+  /** The PostgreSQL type the value is converted to. */
+  pgType: string;
+}
+
+/** Result of checking a query on the server without running it. */
+export type SqlCheckOutcome =
+  | { ok: true; columns: ResultColumn[]; parameters: SqlParameterInfo[]; durationMs: number }
+  | Extract<QueryOutcome, { ok: false }>;
+
+export type VariableOptionsOutcome =
+  /** `column` is set for Multi-select values read from a column: `schema.table.column`. */
+  | { ok: true; options: VariableOption[]; truncated: boolean; column?: string | null }
+  | Extract<QueryOutcome, { ok: false }>;
+
+/* ------------------------------------------------------------------------------------------
+ * Reports
+ * ---------------------------------------------------------------------------------------- */
+
+/** Limits enforced by the backend (src-tauri/src/report/mod.rs). */
+export const REPORT_PDF_MAX_ROWS = 25_000;
+export const REPORT_EXCEL_MAX_ROWS = 1_000_000;
+
+export interface ReportRequest {
+  title: string;
+  sql: string;
+  variables: VariableDef[];
+  values: Record<string, VariableValue>;
+  /** A normalised template definition. */
+  template: unknown;
+  pdf: boolean;
+  xlsx: boolean;
+}
+
+export interface GeneratedReportFile {
+  format: "pdf" | "xlsx";
+  path: string;
+  name: string;
+  sizeBytes: number;
+  pages: number | null;
+}
+
+export type ReportOutcome =
+  | {
+      ok: true;
+      files: GeneratedReportFile[];
+      rows: number;
+      /** E.g. a format that couldn't be created. */
+      warnings: string[];
+      durationMs: number;
+    }
+  | Extract<QueryOutcome, { ok: false }>;
+
+/** Rows a preview reads (src-tauri/src/report/mod.rs). */
+export const REPORT_PREVIEW_ROWS = 200;
+
+export type ReportPreviewOutcome =
+  | {
+      ok: true;
+      /** PNG data URLs of the first pages. */
+      pages: string[];
+      /** Pages laid out from the rows read. */
+      pageCount: number;
+      rows: number;
+      /** The query has more rows than the preview read. */
+      moreRows: boolean;
+      /** Some long text was shortened to fit the PDF columns. */
+      shortened: boolean;
+      /** Too many columns for the page width. */
+      crowded: boolean;
+      durationMs: number;
+    }
+  | Extract<QueryOutcome, { ok: false }>;
+
+/* ------------------------------------------------------------------------------------------
  * Client
  * ---------------------------------------------------------------------------------------- */
 
@@ -318,5 +504,56 @@ export interface IntalixClient {
     /** Creates a template, or replaces the one with `id`. */
     save(name: string, definition: unknown, id?: string): Promise<StoredTemplate>;
     remove(id: string): Promise<void>;
+  };
+  queries: {
+    /** Saved SQL Editor queries, most recently changed first. */
+    list(): Promise<SavedQuery[]>;
+    /** Creates a saved query, or replaces the one with `id`. */
+    save(draft: SavedQueryDraft, id?: string): Promise<SavedQuery>;
+    remove(id: string): Promise<void>;
+  };
+  reports: {
+    /**
+     * Asks where to save (closing the Save dialog rejects with an AbortError), runs the query in
+     * full and writes PDF and/or Excel.
+     */
+    generate(connectionId: string, request: ReportRequest, signal?: AbortSignal): Promise<ReportOutcome>;
+    /** Runs the first rows and draws the first PDF pages. Formats in the request are ignored. */
+    preview(connectionId: string, request: ReportRequest, signal?: AbortSignal): Promise<ReportPreviewOutcome>;
+    /** Opens a report created in this session, or shows it in File Explorer. */
+    open(path: string, reveal: boolean): Promise<void>;
+  };
+  /** PostgreSQL language service. `variables: null` where variables are not available. */
+  sql: {
+    analyze(sql: string, variables: VariableDef[] | null): Promise<SqlAnalysis>;
+    complete(
+      connectionId: string,
+      sql: string,
+      cursor: number,
+      variables: VariableDef[] | null,
+    ): Promise<SqlCompletions>;
+    signature(connectionId: string, sql: string, cursor: number): Promise<SqlSignatureHelp | null>;
+    /** Reloads table and column names used for hints. */
+    refreshCatalog(connectionId: string): Promise<void>;
+    /** Parses and analyses the query on the server without running it. */
+    check(connectionId: string, sql: string, variables: VariableDef[], signal?: AbortSignal): Promise<SqlCheckOutcome>;
+    /** Runs a query with `{{variables}}` bound as parameters. Error positions refer to `sql`. */
+    run(
+      connectionId: string,
+      sql: string,
+      variables: VariableDef[],
+      values: Record<string, VariableValue>,
+      options: { rowLimit: number },
+      signal?: AbortSignal,
+    ): Promise<QueryOutcome>;
+    /** Runs an enum variable's lookup query. */
+    variableOptions(connectionId: string, sql: string, signal?: AbortSignal): Promise<VariableOptionsOutcome>;
+    /** Distinct values of the column `{{variable}}` is compared with in `sql`. */
+    columnValues(
+      connectionId: string,
+      sql: string,
+      variable: string,
+      signal?: AbortSignal,
+    ): Promise<VariableOptionsOutcome>;
   };
 }
