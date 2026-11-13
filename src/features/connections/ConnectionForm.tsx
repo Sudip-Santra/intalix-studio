@@ -12,7 +12,6 @@ import {
   Link2,
   Loader2,
   SlidersHorizontal,
-  Zap,
 } from "lucide-react";
 import { client, ENVIRONMENTS, SSL_MODES, type ConnectionProfile, type ConnectionTestResult } from "@/services/client";
 import { Button } from "@/components/ui/button";
@@ -500,7 +499,7 @@ export function ConnectionForm({ profile, onSaved }: Props) {
             )}
             <Tooltip content="Check the details without saving" shortcut="Ctrl+Enter" side="top">
               <Button onClick={() => run("test")} disabled={busy}>
-                {busy && phase.action === "test" ? <Loader2 className="animate-spin" /> : <Zap />}
+                {busy && phase.action === "test" && <Loader2 className="animate-spin" />}
                 Test Connection
               </Button>
             </Tooltip>
