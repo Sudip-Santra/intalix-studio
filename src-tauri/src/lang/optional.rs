@@ -1,7 +1,7 @@
-//! Optional filters: a condition that uses an empty, not-required variable is skipped.
+//! Optional filters: a condition that uses a not-required (switched off) variable is skipped.
 //!
-//! `WHERE cat_no = {{cat_no}} AND active` with `cat_no` empty runs as
-//! `WHERE TRUE AND active`. The skipped part is the smallest boolean condition around the
+//! `WHERE customer_name = {{customer}} AND total > 0` with `customer` switched off runs as
+//! `WHERE TRUE AND total > 0`. The skipped part is the smallest boolean condition around the
 //! reference inside a `WHERE`, `ON` or `HAVING` clause (or a bracketed group in one):
 //! conditions are separated by `AND` / `OR`, and the `AND` of `BETWEEN … AND …` belongs to its
 //! condition. Function calls, `IN (…)` lists and `ANY(…)` are part of the condition they sit in.
@@ -247,8 +247,11 @@ mod tests {
     #[test]
     fn skips_simple_conditions() {
         assert_eq!(
-            skip("SELECT * FROM t WHERE cat_no = {{cat_no}}", &["cat_no"]),
-            "SELECT * FROM t WHERE TRUE"
+            skip(
+                "SELECT * FROM orders WHERE customer_name = {{customer}}",
+                &["customer"]
+            ),
+            "SELECT * FROM orders WHERE TRUE"
         );
         assert_eq!(
             skip(

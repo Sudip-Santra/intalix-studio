@@ -126,9 +126,9 @@ mod tests {
             relations: vec![
                 Relation {
                     schema: "public".into(),
-                    name: "rsi_products".into(),
+                    name: "customers".into(),
                     kind: RelKind::Table,
-                    columns: vec![col("id"), col("cat_no"), col("Grade")],
+                    columns: vec![col("id"), col("code"), col("Grade")],
                 },
                 Relation {
                     schema: "sales".into(),
@@ -148,8 +148,8 @@ mod tests {
     #[test]
     fn finds_the_compared_column() {
         assert_eq!(
-            found("SELECT * FROM rsi_products WHERE cat_no IN ({{cn}})", "cn").as_deref(),
-            Some("public.rsi_products.cat_no")
+            found("SELECT * FROM customers WHERE code IN ({{code}})", "code").as_deref(),
+            Some("public.customers.code")
         );
         assert_eq!(
             found(
@@ -168,16 +168,12 @@ mod tests {
             Some("sales.orders.status")
         );
         assert_eq!(
-            found(
-                "SELECT * FROM rsi_products p WHERE p.\"Grade\" = {{g}}",
-                "g"
-            )
-            .as_deref(),
-            Some("public.rsi_products.Grade")
+            found("SELECT * FROM customers p WHERE p.\"Grade\" = {{g}}", "g").as_deref(),
+            Some("public.customers.Grade")
         );
         assert_eq!(
             found(
-                "SELECT * FROM rsi_products p JOIN sales.orders o ON o.id = p.id WHERE status IN ({{s}})",
+                "SELECT * FROM customers p JOIN sales.orders o ON o.id = p.id WHERE status IN ({{s}})",
                 "s"
             )
             .as_deref(),
@@ -189,13 +185,13 @@ mod tests {
     fn gives_up_when_unsure() {
         assert!(
             found(
-                "SELECT * FROM rsi_products WHERE lower(cat_no) IN ({{cn}})",
-                "cn"
+                "SELECT * FROM customers WHERE lower(code) IN ({{code}})",
+                "code"
             )
             .is_none()
         );
-        assert!(found("SELECT * FROM rsi_products WHERE nope IN ({{cn}})", "cn").is_none());
-        assert!(found("SELECT {{cn}}", "cn").is_none());
+        assert!(found("SELECT * FROM customers WHERE nope IN ({{code}})", "code").is_none());
+        assert!(found("SELECT {{code}}", "code").is_none());
         assert!(
             found(
                 "WITH c AS (SELECT 1 AS k) SELECT * FROM c WHERE k IN ({{x}})",

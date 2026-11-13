@@ -2,8 +2,18 @@
  * Variables panel: one card per `{{variable}}` with its value, type and Required flag.
  * Cards appear automatically when the SQL references a new name.
  */
+import type * as React from "react";
 import { useState } from "react";
-import { AlertTriangle, Braces, ChevronDown, ChevronRight, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  BookOpen,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  Loader2,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import { VARIABLE_TYPES, type VariableDef, type VariableOptionsSource, type VariableType } from "@/services/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -42,6 +52,9 @@ export function VariablesPanel({
   onRemove,
 }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  /** The guide sits collapsed at the bottom once there are variables; open, it fills the panel. */
+  const [guideOpen, setGuideOpen] = useState(false);
+  const hasVariables = variables.length > 0;
   const toggle = (name: string) =>
     setCollapsed((s) => {
       const next = new Set(s);
@@ -53,12 +66,12 @@ export function VariablesPanel({
   return (
     <aside className="flex h-full min-h-0 flex-col border-l border-border bg-surface">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
-        <h2 className="text-[13px] font-semibold">Variables</h2>
+        <h2 className="text-[13px] font-semibold">{variables.length === 0 ? "Editor guide" : "Variables"}</h2>
         {variables.length > 0 && <span className="text-xs text-subtle-foreground">{variables.length}</span>}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {variables.length === 0 ? (
-          <EmptyVariables />
+      <div className={cn("min-h-0 flex-1 overflow-y-auto", hasVariables && guideOpen && "hidden")}>
+        {!hasVariables ? (
+          <EditorGuide />
         ) : (
           variables.map((def) => (
             <VariableCard
@@ -76,22 +89,149 @@ export function VariablesPanel({
           ))
         )}
       </div>
+
+      {hasVariables && (
+        <section className={cn("flex flex-col border-t border-border", guideOpen && "min-h-0 flex-1")}>
+          <button
+            type="button"
+            aria-expanded={guideOpen}
+            onClick={() => setGuideOpen((o) => !o)}
+            className="flex h-9 shrink-0 items-center gap-2 px-3 text-left outline-none hover:bg-surface-2 focus-visible:shadow-[inset_0_0_0_1px_var(--primary)]"
+          >
+            <BookOpen className="size-3.5 text-muted-foreground" />
+            <span className="flex-1 text-[13px] font-semibold">Editor guide</span>
+            {guideOpen ? (
+              <ChevronDown className="size-3.5 text-muted-foreground" />
+            ) : (
+              <ChevronUp className="size-3.5 text-muted-foreground" />
+            )}
+          </button>
+          {guideOpen && (
+            <div className="min-h-0 flex-1 overflow-y-auto border-t border-border">
+              <EditorGuide />
+            </div>
+          )}
+        </section>
+      )}
     </aside>
   );
 }
 
-function EmptyVariables() {
+/** One variable type in the guide: name, what it is for, and how to write it. */
+const TYPE_GUIDE: { type: string; what: string; sql: string }[] = [
+  { type: "Text", what: "Any text, such as a code or name.", sql: "customer_name = {{customer}}" },
+  { type: "Number", what: "A whole or decimal number.", sql: "amount >= {{min_amount}}" },
+  { type: "Date", what: "One date, picked from a calendar.", sql: "order_date >= {{start_date}}" },
+  {
+    type: "Date range",
+    what: "A from and a to date, both included.",
+    sql: "order_date BETWEEN {{period.from}}\n  AND {{period.to}}",
+  },
+  { type: "Enum", what: "One choice from a list you type.", sql: "region = {{region}}" },
+  {
+    type: "Multi-select",
+    what: "Several values, picked from the column's own values.",
+    sql: "status IN ({{status}})",
+  },
+];
+
+function GuideSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="space-y-3 p-4 text-xs leading-relaxed text-muted-foreground">
-      <Braces className="size-5 text-subtle-foreground" />
-      <p className="text-[13px] font-medium text-foreground">No variables yet</p>
-      <p>Write a name in double braces where a value belongs. It appears here, where you enter its value.</p>
-      <pre className="overflow-x-auto border border-border bg-surface-sunken p-2.5 font-mono text-[11.5px] leading-relaxed text-foreground">
-        {`WHERE region = {{region}}
-  AND order_date BETWEEN
-      {{period.from}} AND {{period.to}}`}
-      </pre>
-      <p>Values are sent to PostgreSQL separately from the SQL, so a filter value can never change the query.</p>
+    <section className="space-y-2 border-b border-border px-4 py-3.5 last:border-b-0">
+      <h3 className="text-[12px] font-semibold text-foreground">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function Code({ children }: { children: string }) {
+  return (
+    <pre className="border border-border bg-surface-sunken px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-foreground">
+      {children}
+    </pre>
+  );
+}
+
+function Key({ children }: { children: string }) {
+  return (
+    <kbd className="border border-border bg-surface-2 px-1 py-px font-mono text-[10.5px] text-muted-foreground">
+      {children}
+    </kbd>
+  );
+}
+
+/** How the SQL Editor, variables and filters work. Fills the panel while there are no
+ * variables; afterwards it is a collapsible section at the bottom. */
+function EditorGuide() {
+  return (
+    <div className="text-xs leading-relaxed text-muted-foreground">
+      <GuideSection title="Add a filter">
+        <p>
+          Write a name in double braces where a value belongs. It appears in this panel, where you pick its type and
+          enter its value.
+        </p>
+        <Code>{"SELECT * FROM orders\nWHERE customer_name = {{customer}}"}</Code>
+        <p>
+          Names use lower-case letters, digits and <code className="font-mono">_</code>. Don't put quotes around a
+          variable: <code className="font-mono">{"{{customer}}"}</code> is already a value.
+        </p>
+      </GuideSection>
+
+      <GuideSection title="Types">
+        <ul className="space-y-2.5">
+          {TYPE_GUIDE.map((t) => (
+            <li key={t.type} className="space-y-1">
+              <p>
+                <span className="font-medium text-foreground">{t.type}</span> · {t.what}
+              </p>
+              <Code>{t.sql}</Code>
+            </li>
+          ))}
+        </ul>
+        <p>The type is guessed from the name and how you use it; change it in the variable's settings.</p>
+      </GuideSection>
+
+      <GuideSection title="Required">
+        <div className="flex gap-2.5">
+          <Checkbox checked aria-hidden tabIndex={-1} className="pointer-events-none mt-0.5" />
+          <p>
+            <span className="font-medium text-foreground">Checked: the filter is applied.</span> It needs a value; the
+            query won't run without one.
+          </p>
+        </div>
+        <div className="flex gap-2.5">
+          <Checkbox checked={false} aria-hidden tabIndex={-1} className="pointer-events-none mt-0.5" />
+          <p>
+            <span className="font-medium text-foreground">Unchecked: the filter is skipped,</span> even if a value is
+            filled in. Its condition is left out, so you get all rows.
+          </p>
+        </div>
+        <Code>
+          {"WHERE customer_name = {{customer}}\n  AND total > 0\n-- unchecked runs as:\nWHERE TRUE AND total > 0"}
+        </Code>
+      </GuideSection>
+
+      <GuideSection title="Shortcuts">
+        <ul className="space-y-1.5">
+          <li>
+            <Key>Ctrl</Key> + <Key>Enter</Key> runs the query, or just the selected part.
+          </li>
+          <li>
+            <Key>Ctrl</Key> + <Key>Space</Key> shows suggestions: tables, columns, functions.
+          </li>
+          <li>
+            <Key>Ctrl</Key> + <Key>S</Key> saves the query.
+          </li>
+        </ul>
+        <p>
+          Problems are underlined as you type, and PostgreSQL checks the query without running it. Queries only read
+          data.
+        </p>
+      </GuideSection>
+
+      <GuideSection title="Safe by design">
+        <p>Filter values are sent to PostgreSQL separately from the SQL, so a value can never change the query.</p>
+      </GuideSection>
     </div>
   );
 }

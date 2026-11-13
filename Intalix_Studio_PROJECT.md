@@ -1469,8 +1469,8 @@ this section wins.
     condition around the reference in a `WHERE` / `ON` / `HAVING` clause
     with `TRUE` (conditions split on `AND` / `OR`; `BETWEEN … AND …`,
     function calls, `IN (…)` and `ANY(…)` stay whole). Example:
-    `WHERE cat_no = {{cat_no}} AND active` runs as
-    `WHERE TRUE AND active`. A reference outside such a clause (select
+    `WHERE customer_name = {{customer}} AND total > 0` runs as
+    `WHERE TRUE AND total > 0`. A reference outside such a clause (select
     list, `LIMIT`) can't be removed and binds NULL. New variables start
     as required. The server check always checks the full query.
 -   **Date picker (2026-11-13):** dates use the app's own calendar
@@ -1480,6 +1480,15 @@ this section wins.
     header), Today and Clear, full keyboard support (arrows, PageUp/Down,
     Shift for years). Dates show as "13 Nov 2026" and are stored as
     `YYYY-MM-DD`.
+-   **Editor guide (2026-11-13):** while a query has no variables, the
+    right panel shows a guide: how to add a filter, every type with an
+    example, what Required checked and unchecked do, and the shortcuts.
+    Once the query has variables, the guide is a collapsed "Editor
+    guide" bar at the bottom of the panel; expanded, it covers the
+    variable list and scrolls; collapsed, it returns to the bottom.
+-   **Name before saving:** Save on a query still called "Untitled
+    Query" doesn't save; it highlights and selects the name field with
+    "Name the query, then save". Enter in the name field then saves.
 -   Commands: `sql_analyze`, `sql_complete`, `sql_signature`,
     `sql_refresh_catalog`, `sql_check`, `sql_run`,
     `sql_variable_options`.

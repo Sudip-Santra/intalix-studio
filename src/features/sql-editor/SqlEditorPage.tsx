@@ -79,6 +79,9 @@ export function SqlEditorPage({ profile, active }: Props) {
   const [justSaved, setJustSaved] = useState(false);
   const [pendingSwitch, setPendingSwitch] = useState<(() => void) | null>(null);
   const [pendingDelete, setPendingDelete] = useState<SavedQuery | null>(null);
+  /** Save was pressed while the query still had its placeholder name. */
+  const [nameHint, setNameHint] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   const viewRef = useRef<EditorView | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -212,6 +215,7 @@ export function SqlEditorPage({ profile, active }: Props) {
   function openDraft(next: QueryDraft) {
     abortSilently();
     untouched.current = new Set();
+    setNameHint(false);
     setDraft(next);
     setBaseline(next);
     setShowProblems(false);
@@ -230,10 +234,17 @@ export function SqlEditorPage({ profile, active }: Props) {
   async function save() {
     if (saving) return;
     const current = draftRef.current;
-    if (!current.name.trim()) {
-      setSaveError("Give the query a name.");
+    // An unnamed query is named first: highlight the name and put the cursor there.
+    if (!current.name.trim() || isPlaceholderName(current.name)) {
+      setNameHint(true);
+      setSaveError(null);
+      requestAnimationFrame(() => {
+        nameRef.current?.focus();
+        nameRef.current?.select();
+      });
       return;
     }
+    setNameHint(false);
     setSaving(true);
     setSaveError(null);
     try {
@@ -365,13 +376,33 @@ export function SqlEditorPage({ profile, active }: Props) {
       <section className="flex min-w-0 flex-1 flex-col bg-background">
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-surface px-3">
           <Input
+            ref={nameRef}
             aria-label="Query name"
+            aria-invalid={nameHint || undefined}
             value={draft.name}
             maxLength={120}
-            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-            className="h-7 max-w-[260px] min-w-[120px] border-transparent bg-transparent px-1.5 text-[13px] font-semibold hover:border-border focus-visible:bg-surface-2"
+            onChange={(e) => {
+              setNameHint(false);
+              setDraft({ ...draft, name: e.target.value });
+            }}
+            onKeyDown={(e) => {
+              // Enter saves straight away once the query has a name.
+              if (e.key === "Enter" && nameHint) {
+                e.preventDefault();
+                void save();
+              }
+            }}
+            className={cn(
+              "h-7 max-w-[260px] min-w-[120px] border-transparent bg-transparent px-1.5 text-[13px] font-semibold hover:border-border focus-visible:bg-surface-2",
+              nameHint && "border-danger bg-surface-2 shadow-[0_0_0_1px_var(--danger)]",
+            )}
           />
-          {(changed || draft.id === "") && !saveError && (
+          {nameHint && (
+            <span role="alert" className="shrink-0 text-[11px] font-medium text-danger">
+              Name the query, then save
+            </span>
+          )}
+          {(changed || draft.id === "") && !saveError && !nameHint && (
             <span className="shrink-0 text-[11px] text-subtle-foreground">
               {draft.id === "" ? "Not saved yet" : "Unsaved changes"}
             </span>
@@ -496,6 +527,9 @@ export function SqlEditorPage({ profile, active }: Props) {
     </div>
   );
 }
+
+/** "Untitled Query" or "Untitled Query 2": the name a new query starts with. */
+const isPlaceholderName = (name: string) => /^untitled query( \d+)?$/i.test(name.trim());
 
 /** Live verdict next to the toolbar: problems found while typing, or PostgreSQL's check. */
 function CheckStatus({ check, problems }: { check: CheckState; problems: number }) {
