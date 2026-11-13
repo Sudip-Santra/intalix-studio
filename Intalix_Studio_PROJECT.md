@@ -1345,9 +1345,10 @@ this section wins.
 | SQL workspace: editor with PostgreSQL syntax and schema autocomplete, run selection, cancel, row limit, typed result grid, read-only statement guard | UI done, simulated backend |
 | Right-click menus (pgAdmin-style, read-only items) on explorer, tabs and result grid; browser menu suppressed | UI done |
 | Real backend: connections, credential storage, schema introspection, read-only query execution, cancellation | Done, tested against PostgreSQL 17 |
-| Command allow-list: the window may call only the 27 declared backend commands | Done |
+| Command allow-list: the window may call only the 30 declared backend commands | Done |
 | Report template designer: built-in templates, live true-size preview with real pagination, full design settings, save/duplicate/delete | Done, stored in local SQLite |
 | SQL Editor: Rust PostgreSQL language service (hints, live diagnostics, server check), typed `{{variables}}` as filters, saved queries | Done, stored in local SQLite |
+| Report generation: SQL Editor query + report template → PDF (Typst) and Excel (rust_xlsxwriter), Save dialog, Open / Show in folder | Done |
 
 ### 24.3.1 Report templates (2026-11-12)
 
@@ -1493,6 +1494,78 @@ this section wins.
     `sql_refresh_catalog`, `sql_check`, `sql_run`,
     `sql_variable_options`.
 
+### 24.3.3 Report generation (2026-11-13)
+
+-   **Flow:** in the SQL Editor, **Report** opens Generate Report: report
+    name (defaults to the query name; used as `{title}` and the file
+    name), a template (saved and built-in, with thumbnails), **PDF** and
+    **Excel** checkboxes (at least one), and the filters that will be
+    applied. Generate asks where to save (Windows Save dialog; with both
+    formats the Excel file goes next to the PDF with the same name),
+    runs the query again with all rows and shows the files with **Open**
+    and **Show in folder**. Closing the Save dialog returns to the form.
+    The last template and formats are remembered.
+-   **Rows (user decision):** the report re-runs the query in full; the
+    on-screen result is only a preview. Limits: PDF 25,000 rows and 600
+    pages (larger reports get a message suggesting Excel), Excel
+    1,000,000 rows (more → first 1,000,000 with a warning).
+-   **Streaming:** rows go from PostgreSQL straight into the Excel writer
+    (rust_xlsxwriter "constant memory" mode) and, up to the PDF limit,
+    into the PDF table. A failed or cancelled report never leaves a
+    half-written file: files are written as `*.part` and renamed.
+-   **PDF:** Typst 0.15 embedded as a library (`src-tauri/src/report/`).
+    `report.typ` is a fixed layout that reads the report as JSON from a
+    virtual file system, so report data can't change the layout, and the
+    compiler can't read files or the network. It mirrors the template
+    preview: header (left / centre / split, plain / rule / band, logo or
+    monogram, filters), table with repeated headings on every page,
+    stripes, gridlines, density, row numbers, totals, "Continued" line
+    on later pages, footer with `{page}` / `{pages}`, watermark. Inter (SIL OFL, `src-tauri/fonts/`) is bundled; Segoe UI,
+    Arial, Calibri, Georgia and Cambria come from Windows, with Nirmala
+    UI and Segoe UI Symbol as fallbacks for Indian scripts and symbols.
+-   **Excel:** numbers, dates, timestamps and booleans are native Excel
+    values with formats from the template (decimals, currency, negative
+    style, Indian grouping, date format); values over 15 significant
+    digits stay exact as right-aligned text. Text is never a formula.
+    Title, subtitle and filters above the table, styled heading row,
+    frozen and filtered, stripes, gridlines, `SUM` totals, column
+    widths from the data, page setup (paper, orientation, margins,
+    repeated heading row, footer with page numbers).
+-   **Formatting** (`report/format.rs`) is a port of the template
+    preview's: exact decimal rounding and grouping (no floating point),
+    template date format, timestamps with `HH:MM`. Column headings from
+    plain `snake_case` names become title case (`order_date` → "Order
+    Date"); names given with `AS "…"` are kept. Numeric columns named
+    like amounts (amount, price, total, revenue, …) are money columns
+    (currency symbol). Totals are exact and skip identifiers, codes,
+    years and ratios (id, *_id, code, year, pct, rate, avg, change, …).
+-   **Orientation:** Portrait / Landscape in the dialog. It starts from
+    the template's orientation and only changes this report.
+-   **Preview (2026-11-14):** **Preview** widens the dialog with a pane
+    showing the first 4 PDF pages, drawn by the backend (typst-render,
+    PNG) from the first 200 rows; it redraws when the name, template or
+    orientation changes. It flags tables with too many columns for the
+    page (with a "Use landscape" button) and shortened text.
+-   **Fitting wide tables** (`report/fit.rs`): column widths come from
+    the values (90th-percentile length for text, full length for numbers
+    and dates, the longest heading word). When they don't fit, columns
+    shrink towards a minimum and the table text gets smaller (down to
+    6 pt; at most 1.5 pt smaller just to avoid wrapping). Numbers and
+    dates never wrap unless the table can't fit at all. Words too long
+    for their column (codes, UUIDs, paths, chemical strings) get
+    invisible break points, headings hyphenate, and text over 6 lines is
+    shortened with "…" (a warning says so; Excel keeps the full text),
+    so values never spill into the next column.
+-   **Security:** the Save dialog is opened by the backend (the UI can't
+    choose arbitrary paths), and only files written in this session can
+    be opened. Commands `report_generate`, `report_preview`,
+    `report_open`.
+-   **Checking the layout:** `cargo test report_preview -- --ignored`
+    with `INTALIX_REPORT_PREVIEW=<folder>` writes sample PDFs and page
+    images for the Corporate, Modern and Finance Ledger templates;
+    `wide_report_preview` does the same for a 22-column table in portrait
+    and landscape.
+
 ### 24.4 Notes for the backend
 
 -   Query results use a typed cell model (`Cell` in
@@ -1520,6 +1593,14 @@ src-tauri/src/
 ├── storage.rs       SQLite with versioned migrations (src-tauri/migrations)
 ├── templates.rs     report template validation
 ├── saved_queries.rs saved SQL Editor queries and their validation
+├── report/          report generation (PDF via Typst, Excel via rust_xlsxwriter)
+│   ├── mod.rs       request, streaming sink, file writing
+│   ├── template.rs  template definition with defaults
+│   ├── format.rs    numbers, dates, column kinds, exact totals
+│   ├── fit.rs       fitting the PDF table to the page width
+│   ├── pdf.rs       Typst world, fonts, layout, preview images
+│   ├── report.typ   the PDF layout
+│   └── xlsx.rs      Excel writer
 ├── lang/            PostgreSQL language service (pure, offline)
 │   ├── lexer.rs     tolerant lexer with UTF-16 offsets and {{variables}}
 │   ├── analyze.rs   instant diagnostics

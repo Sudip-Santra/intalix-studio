@@ -943,6 +943,60 @@ async fn variable_steps(handle: &crate::pg::connect::PoolHandle, jobs: &Jobs) {
         CheckOutcome::Ok(_) => panic!("unknown column must fail"),
     }
 
+    // A report streams the full result into PDF and Excel files.
+    let mut prepared = crate::report::prepare(&crate::report::ReportRequest {
+        title: "Invoices".into(),
+        sql: "SELECT id, issued, region, status::text AS status, amount FROM intalix_it.invoices ORDER BY id".into(),
+        variables: vec![],
+        values: BTreeMap::new(),
+        template: json!({}),
+        pdf: true,
+        xlsx: true,
+    })
+    .unwrap();
+    jobs.register("report");
+    let fetched = crate::pg::variables::stream(
+        handle,
+        jobs,
+        "report",
+        "SELECT id, issued, region, status::text AS status, amount FROM intalix_it.invoices ORDER BY id",
+        &[],
+        &BTreeMap::new(),
+        prepared.max_rows,
+        &mut prepared.sink,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    jobs.finish("report");
+    assert_eq!(fetched.rows, 60);
+    let totals: Vec<String> = prepared
+        .sink
+        .data
+        .totals_row()
+        .unwrap()
+        .into_iter()
+        .map(|f| f.text)
+        .collect();
+    // 10.25 × (1 + … + 60) = 18,757.50; ids aren't totalled.
+    assert_eq!(totals.last().map(String::as_str), Some("18,757.50"));
+    assert_eq!(totals[0], "Total");
+    let dir = std::env::temp_dir().join(format!("intalix-it-report-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let xlsx = prepared.sink.take_xlsx().unwrap();
+    crate::report::write_xlsx(xlsx, &prepared.sink.data, &dir.join("r.xlsx")).unwrap();
+    let pages =
+        crate::report::write_pdf(&prepared.sink.data, &prepared.template, &dir.join("r.pdf"))
+            .unwrap()
+            .pages;
+    assert!(pages >= 2);
+    assert!(
+        std::fs::read(dir.join("r.pdf"))
+            .unwrap()
+            .starts_with(b"%PDF")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
     // The read-only policy still applies.
     let write = check_vars(
         handle,

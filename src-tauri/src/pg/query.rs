@@ -169,6 +169,59 @@ pub async fn fetch(
     params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
     row_limit: u32,
 ) -> AppResult<QueryResultSet> {
+    struct Collect {
+        columns: Vec<ResultColumn>,
+        rows: Vec<Vec<Cell>>,
+        bytes: usize,
+    }
+    impl RowSink for Collect {
+        fn start(&mut self, columns: &[ResultColumn]) -> AppResult<()> {
+            self.columns = columns.to_vec();
+            Ok(())
+        }
+        fn row(&mut self, cells: Vec<Cell>) -> AppResult<bool> {
+            self.bytes += cells.iter().map(cell_size).sum::<usize>();
+            self.rows.push(cells);
+            // The UI result has a memory budget; reports stream instead.
+            Ok(self.bytes <= MAX_RESULT_BYTES)
+        }
+    }
+    let mut sink = Collect {
+        columns: Vec::new(),
+        rows: Vec::new(),
+        bytes: 0,
+    };
+    let fetched = fetch_each(tx, statement, params, u64::from(row_limit), &mut sink).await?;
+    Ok(QueryResultSet {
+        columns: sink.columns,
+        rows: sink.rows,
+        truncated: fetched.truncated,
+        row_limit,
+    })
+}
+
+/// Receives a result one row at a time (reports stream rows straight into their files).
+pub trait RowSink: Send {
+    fn start(&mut self, columns: &[ResultColumn]) -> AppResult<()>;
+    /// Returns `false` to stop reading; the result then counts as truncated.
+    fn row(&mut self, cells: Vec<Cell>) -> AppResult<bool>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fetched {
+    pub rows: u64,
+    /// More rows existed than were delivered.
+    pub truncated: bool,
+}
+
+/// Binds `params` and delivers up to `max_rows` rows to `sink`, in batches.
+pub async fn fetch_each(
+    tx: &deadpool_postgres::Transaction<'_>,
+    statement: &tokio_postgres::Statement,
+    params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+    max_rows: u64,
+    sink: &mut dyn RowSink,
+) -> AppResult<Fetched> {
     let pg = |e: tokio_postgres::Error| map_pg_error(&e, Phase::Query);
     let columns: Vec<ResultColumn> = statement
         .columns()
@@ -183,23 +236,23 @@ pub async fn fetch(
         .iter()
         .map(|c| c.type_().clone())
         .collect();
+    sink.start(&columns)?;
 
     let portal = tx.bind(statement, params).await.map_err(pg)?;
-    let mut rows: Vec<Vec<Cell>> = Vec::new();
-    let mut bytes = 0usize;
+    let mut delivered = 0u64;
     let mut truncated = false;
 
-    // Fetch limit + 1 rows in batches; the extra row tells us whether more exist.
+    // Fetch max + 1 rows in batches; the extra row tells us whether more exist.
     'fetch: loop {
-        let wanted = (row_limit as usize + 1).saturating_sub(rows.len());
-        let batch_size = wanted.min(FETCH_BATCH as usize);
+        let wanted = (max_rows + 1).saturating_sub(delivered);
+        let batch_size = wanted.min(u64::from(FETCH_BATCH));
         let batch = tx
             .query_portal(&portal, i32::try_from(batch_size).unwrap_or(i32::MAX))
             .await
             .map_err(pg)?;
-        let exhausted = batch.len() < batch_size;
+        let exhausted = (batch.len() as u64) < batch_size;
         for row in &batch {
-            if rows.len() >= row_limit as usize || bytes > MAX_RESULT_BYTES {
+            if delivered >= max_rows {
                 truncated = true;
                 break 'fetch;
             }
@@ -208,22 +261,21 @@ pub async fn fetch(
                 let raw: Raw<'_> = row
                     .try_get(i)
                     .map_err(|e| AppError::internal("reading result row", e))?;
-                let cell = decode(ty, raw.0);
-                bytes += cell_size(&cell);
-                cells.push(cell);
+                cells.push(decode(ty, raw.0));
             }
-            rows.push(cells);
+            delivered += 1;
+            if !sink.row(cells)? {
+                truncated = true;
+                break 'fetch;
+            }
         }
         if exhausted {
             break;
         }
     }
-
-    Ok(QueryResultSet {
-        columns,
-        rows,
+    Ok(Fetched {
+        rows: delivered,
         truncated,
-        row_limit,
     })
 }
 

@@ -14,6 +14,7 @@ use crate::model::{
     RelationDetail, SaveConnectionResult, SchemaObjects, SchemaSummary,
 };
 use crate::pg::variables::CheckOutcome;
+use crate::report::{PreviewOutcome, ReportOutcome, ReportRequest};
 use crate::saved_queries::{SavedQuery, SavedQueryDraft};
 use crate::service::{AppState, OptionsOutcome};
 use crate::templates::{ReportTemplate, TemplateDraft};
@@ -266,4 +267,34 @@ pub async fn sql_column_values(
     state
         .column_values(&request_id, &connection_id, &sql, &variable)
         .await
+}
+
+#[tauri::command]
+pub async fn report_generate(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request_id: String,
+    connection_id: String,
+    request: ReportRequest,
+) -> AppResult<ReportOutcome> {
+    state
+        .generate_report(&app, &request_id, &connection_id, request)
+        .await
+}
+
+#[tauri::command]
+pub async fn report_preview(
+    state: State<'_, AppState>,
+    request_id: String,
+    connection_id: String,
+    request: ReportRequest,
+) -> AppResult<PreviewOutcome> {
+    state
+        .preview_report(&request_id, &connection_id, request)
+        .await
+}
+
+#[tauri::command]
+pub async fn report_open(state: State<'_, AppState>, path: String, reveal: bool) -> AppResult<()> {
+    state.open_report(&path, reveal).await
 }

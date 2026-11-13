@@ -28,6 +28,9 @@ const COMMANDS: &[&str] = &[
     "sql_run",
     "sql_variable_options",
     "sql_column_values",
+    "report_generate",
+    "report_open",
+    "report_preview",
 ];
 
 fn main() {

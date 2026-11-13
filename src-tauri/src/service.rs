@@ -25,6 +25,9 @@ use crate::model::{
 use crate::pg::connect::{PoolHandle, Pools, map_pool_error, test_connection};
 use crate::pg::variables::CheckOutcome;
 use crate::pg::{introspect, query};
+use crate::report::{
+    self, PreviewOutcome, PreviewSuccess, ReportOutcome, ReportRequest, ReportSuccess,
+};
 use crate::saved_queries::{
     MAX_SAVED_QUERIES, SavedQuery, SavedQueryDraft, validate_draft as validate_query_draft,
     validate_query_id,
@@ -42,6 +45,8 @@ pub struct AppState {
     pub jobs: Jobs,
     /// Database names for SQL hints, per connection.
     pub catalogs: Catalogs,
+    /// Report files written in this session; only these can be opened from the UI.
+    pub generated: std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
 }
 
 /// Choices for an enum variable, from its lookup query.
@@ -527,6 +532,251 @@ impl AppState {
                 })
             }
         })
+    }
+
+    /* ------------------------------------- reports ------------------------------------- */
+
+    /// Runs a SQL Editor query in full and writes it as PDF and/or Excel with a template.
+    /// Asks where to save first; closing that dialog cancels.
+    pub async fn generate_report(
+        &self,
+        app: &tauri::AppHandle,
+        request_id: &str,
+        profile_id: &str,
+        request: ReportRequest,
+    ) -> AppResult<ReportOutcome> {
+        use tauri_plugin_dialog::DialogExt;
+
+        validate_request_id(request_id)?;
+        validate_profile_id(profile_id)?;
+        check_sql_size(&request.sql)?;
+        let started = std::time::Instant::now();
+        let failed = |e: AppError| {
+            Ok(ReportOutcome::Failed(QueryFailure::from_error(
+                e,
+                report::elapsed(started),
+            )))
+        };
+        if let Err(error) = validate_definitions(&request.variables) {
+            return failed(error);
+        }
+        let bound = match resolve_values(&request.variables, &request.values) {
+            Ok(bound) => bound,
+            Err(error) => return failed(error),
+        };
+        let mut prepared = match report::prepare(&request) {
+            Ok(p) => p,
+            Err(error) => return failed(error),
+        };
+
+        // Where to save. With both formats the Excel file goes next to the PDF.
+        let ext = if request.pdf { "pdf" } else { "xlsx" };
+        let dialog = app
+            .dialog()
+            .file()
+            .set_title("Save report")
+            .set_file_name(format!("{}.{ext}", report::file_stem(&prepared.title)))
+            .add_filter(
+                if request.pdf {
+                    "PDF report"
+                } else {
+                    "Excel workbook"
+                },
+                &[ext],
+            );
+        let chosen = tokio::task::spawn_blocking(move || dialog.blocking_save_file())
+            .await
+            .map_err(|e| AppError::internal("save dialog", e))?;
+        let Some(chosen) = chosen else {
+            return Err(AppError::cancelled());
+        };
+        let chosen = chosen
+            .into_path()
+            .map_err(|e| AppError::internal("save dialog path", e))?;
+        let (pdf_path, xlsx_path) = report::targets(&chosen, request.pdf, request.xlsx);
+
+        // Stream the rows into the report.
+        self.jobs.register(request_id);
+        let streamed = async {
+            let handle = self.pool(profile_id).await?;
+            crate::pg::variables::stream(
+                &handle,
+                &self.jobs,
+                request_id,
+                &request.sql,
+                &request.variables,
+                &bound,
+                prepared.max_rows,
+                &mut prepared.sink,
+            )
+            .await
+        }
+        .await;
+        self.jobs.finish(request_id);
+        let fetched = match streamed {
+            Err(error) if error.category == ErrorCategory::Cancelled => return Err(error),
+            Err(error) | Ok(Err(error)) => return failed(error),
+            Ok(Ok(fetched)) => fetched,
+        };
+
+        // Write the files. Layout and compression are CPU work, kept off the async threads.
+        let mut files = Vec::new();
+        let mut warnings = Vec::new();
+        let describe = |e: &AppError| match &e.hint {
+            Some(hint) => format!("{} {hint}", e.message),
+            None => e.message.clone(),
+        };
+        let xlsx = prepared.sink.take_xlsx();
+        let data = &prepared.sink.data;
+        if let (Some(path), Some(x)) = (&xlsx_path, xlsx) {
+            match tokio::task::block_in_place(|| report::write_xlsx(x, data, path)) {
+                Ok(()) => files.push(report::generated("xlsx", path, None)),
+                Err(e) => warnings.push(format!("Excel was not created. {}", describe(&e))),
+            }
+            if fetched.truncated {
+                warnings.push(format!(
+                    "The query returned more than {} rows; the Excel file has the first {}.",
+                    crate::report::EXCEL_MAX_ROWS,
+                    crate::report::EXCEL_MAX_ROWS
+                ));
+            }
+        }
+        if let Some(path) = &pdf_path {
+            if prepared.sink.pdf_overflow {
+                warnings.push(format!(
+                    "The PDF was not created: the report has more than {} rows. Use Excel for large reports, or narrow the filters.",
+                    crate::report::PDF_MAX_ROWS
+                ));
+            } else {
+                let template = &prepared.template;
+                match tokio::task::block_in_place(|| report::write_pdf(data, template, path)) {
+                    Ok(written) => {
+                        files.push(report::generated("pdf", path, Some(written.pages)));
+                        if written.shortened {
+                            warnings.push(report::SHORTENED_NOTE.to_owned());
+                        }
+                    }
+                    Err(e) => warnings.push(format!("The PDF was not created. {}", describe(&e))),
+                }
+            }
+        }
+        if files.is_empty() {
+            return failed(AppError::invalid(warnings.join(" ")));
+        }
+
+        let mut generated = self
+            .generated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for f in &files {
+            generated.insert(std::path::PathBuf::from(&f.path));
+        }
+        drop(generated);
+        tracing::info!(files = files.len(), rows = fetched.rows, "report generated");
+        Ok(ReportOutcome::Ok(ReportSuccess {
+            ok: true,
+            files,
+            rows: fetched.rows,
+            warnings,
+            duration_ms: report::elapsed(started),
+        }))
+    }
+
+    /// Runs the first rows of a SQL Editor query and draws the first PDF pages.
+    pub async fn preview_report(
+        &self,
+        request_id: &str,
+        profile_id: &str,
+        request: ReportRequest,
+    ) -> AppResult<PreviewOutcome> {
+        validate_request_id(request_id)?;
+        validate_profile_id(profile_id)?;
+        check_sql_size(&request.sql)?;
+        let started = std::time::Instant::now();
+        let failed = |e: AppError| {
+            Ok(PreviewOutcome::Failed(QueryFailure::from_error(
+                e,
+                report::elapsed(started),
+            )))
+        };
+        if let Err(error) = validate_definitions(&request.variables) {
+            return failed(error);
+        }
+        let bound = match resolve_values(&request.variables, &request.values) {
+            Ok(bound) => bound,
+            Err(error) => return failed(error),
+        };
+        let mut prepared = match report::prepare_preview(&request) {
+            Ok(p) => p,
+            Err(error) => return failed(error),
+        };
+
+        self.jobs.register(request_id);
+        let streamed = async {
+            let handle = self.pool(profile_id).await?;
+            crate::pg::variables::stream(
+                &handle,
+                &self.jobs,
+                request_id,
+                &request.sql,
+                &request.variables,
+                &bound,
+                prepared.max_rows,
+                &mut prepared.sink,
+            )
+            .await
+        }
+        .await;
+        self.jobs.finish(request_id);
+        let fetched = match streamed {
+            Err(error) if error.category == ErrorCategory::Cancelled => return Err(error),
+            Err(error) | Ok(Err(error)) => return failed(error),
+            Ok(Ok(fetched)) => fetched,
+        };
+
+        let data = &prepared.sink.data;
+        let template = &prepared.template;
+        match tokio::task::block_in_place(|| report::preview_pages(data, template)) {
+            Ok(drawn) => Ok(PreviewOutcome::Ok(PreviewSuccess {
+                ok: true,
+                pages: drawn.images,
+                page_count: drawn.page_count,
+                rows: fetched.rows,
+                more_rows: fetched.truncated,
+                shortened: drawn.shortened,
+                crowded: drawn.crowded,
+                duration_ms: report::elapsed(started),
+            })),
+            Err(error) => failed(error),
+        }
+    }
+
+    /// Opens a report written in this session, or shows it in File Explorer.
+    pub async fn open_report(&self, path: &str, reveal: bool) -> AppResult<()> {
+        let path = std::path::PathBuf::from(path);
+        let known = self
+            .generated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&path);
+        if !known {
+            return Err(AppError::invalid(
+                "Only reports created here can be opened.",
+            ));
+        }
+        if !path.exists() {
+            return Err(AppError::not_found("The report file was moved or deleted."));
+        }
+        tokio::task::spawn_blocking(move || {
+            if reveal {
+                tauri_plugin_opener::reveal_item_in_dir(&path)
+            } else {
+                tauri_plugin_opener::open_path(&path, None::<&str>)
+            }
+        })
+        .await
+        .map_err(|e| AppError::internal("opening the report", e))?
+        .map_err(|e| AppError::invalid("The report could not be opened.").with_hint(e.to_string()))
     }
 
     /* --------------------------------- pooled access --------------------------------- */

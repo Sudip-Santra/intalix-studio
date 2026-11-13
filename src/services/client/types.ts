@@ -399,6 +399,65 @@ export type VariableOptionsOutcome =
   | Extract<QueryOutcome, { ok: false }>;
 
 /* ------------------------------------------------------------------------------------------
+ * Reports
+ * ---------------------------------------------------------------------------------------- */
+
+/** Limits enforced by the backend (src-tauri/src/report/mod.rs). */
+export const REPORT_PDF_MAX_ROWS = 25_000;
+export const REPORT_EXCEL_MAX_ROWS = 1_000_000;
+
+export interface ReportRequest {
+  title: string;
+  sql: string;
+  variables: VariableDef[];
+  values: Record<string, VariableValue>;
+  /** A normalised template definition. */
+  template: unknown;
+  pdf: boolean;
+  xlsx: boolean;
+}
+
+export interface GeneratedReportFile {
+  format: "pdf" | "xlsx";
+  path: string;
+  name: string;
+  sizeBytes: number;
+  pages: number | null;
+}
+
+export type ReportOutcome =
+  | {
+      ok: true;
+      files: GeneratedReportFile[];
+      rows: number;
+      /** E.g. a format that couldn't be created. */
+      warnings: string[];
+      durationMs: number;
+    }
+  | Extract<QueryOutcome, { ok: false }>;
+
+/** Rows a preview reads (src-tauri/src/report/mod.rs). */
+export const REPORT_PREVIEW_ROWS = 200;
+
+export type ReportPreviewOutcome =
+  | {
+      ok: true;
+      /** PNG data URLs of the first pages. */
+      pages: string[];
+      /** Pages laid out from the rows read. */
+      pageCount: number;
+      rows: number;
+      /** The query has more rows than the preview read. */
+      moreRows: boolean;
+      /** Some long text was shortened to fit the PDF columns. */
+      shortened: boolean;
+      /** Too many columns for the page width. */
+      crowded: boolean;
+      durationMs: number;
+    }
+  | Extract<QueryOutcome, { ok: false }>;
+
+/* ------------------------------------------------------------------------------------------
  * Client
  * ---------------------------------------------------------------------------------------- */
 
@@ -452,6 +511,17 @@ export interface IntalixClient {
     /** Creates a saved query, or replaces the one with `id`. */
     save(draft: SavedQueryDraft, id?: string): Promise<SavedQuery>;
     remove(id: string): Promise<void>;
+  };
+  reports: {
+    /**
+     * Asks where to save (closing the Save dialog rejects with an AbortError), runs the query in
+     * full and writes PDF and/or Excel.
+     */
+    generate(connectionId: string, request: ReportRequest, signal?: AbortSignal): Promise<ReportOutcome>;
+    /** Runs the first rows and draws the first PDF pages. Formats in the request are ignored. */
+    preview(connectionId: string, request: ReportRequest, signal?: AbortSignal): Promise<ReportPreviewOutcome>;
+    /** Opens a report created in this session, or shows it in File Explorer. */
+    open(path: string, reveal: boolean): Promise<void>;
   };
   /** PostgreSQL language service. `variables: null` where variables are not available. */
   sql: {

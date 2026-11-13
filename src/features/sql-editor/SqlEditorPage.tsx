@@ -12,6 +12,7 @@ import {
   Check,
   Copy,
   FileCode2,
+  FileOutput,
   Loader2,
   MoreVertical,
   Play,
@@ -49,6 +50,7 @@ import type { ConnectionProfile } from "@/services/client";
 import { QueryResults, type Run } from "@/features/workspace/QueryResults";
 import { SEPARATOR_CLASS } from "@/features/workspace/styles";
 import { blankDraft, sameDraft, syncVariables, toDraft, uniqueName, valueProblem, type QueryDraft } from "./model";
+import { ReportDialog } from "./ReportDialog";
 import { VariablesPanel } from "./VariablesPanel";
 
 const ROW_LIMITS = [100, 500, 1000, 5000, 10000];
@@ -82,6 +84,7 @@ export function SqlEditorPage({ profile, active }: Props) {
   /** Save was pressed while the query still had its placeholder name. */
   const [nameHint, setNameHint] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
+  const [reportOpen, setReportOpen] = useState(false);
 
   const viewRef = useRef<EditorView | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -442,6 +445,11 @@ export function SqlEditorPage({ profile, active }: Props) {
                 ))}
               </SelectContent>
             </Select>
+            <Tooltip content="Generate a PDF or Excel report">
+              <Button size="sm" onClick={() => setReportOpen(true)} disabled={!draft.sql.trim()}>
+                <FileOutput /> Report
+              </Button>
+            </Tooltip>
             <Tooltip content="Save" shortcut="Ctrl+S">
               <Button size="sm" onClick={() => void save()} disabled={saving}>
                 {saving ? <Loader2 className="animate-spin" /> : <Save />} Save
@@ -503,6 +511,14 @@ export function SqlEditorPage({ profile, active }: Props) {
         </Group>
       </section>
 
+      <ReportDialog
+        open={reportOpen}
+        onOpenChange={setReportOpen}
+        connectionId={profile.id}
+        queryName={draft.name}
+        sql={draft.sql}
+        variables={draft.variables}
+      />
       <ConfirmDialog
         open={pendingSwitch !== null}
         title="Discard unsaved changes?"

@@ -32,8 +32,19 @@ thiserror = "2.0.21"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
-time = { version = "0.3.55", features = ["formatting"] }
+time = { version = "0.3.55", features = ["formatting", "local-offset"] }
 keyring-core = "1.0.1"
+# Reports: PDF through Typst (embedded), Excel through rust_xlsxwriter.
+typst = "0.15.1"
+typst-pdf = "0.15.1"
+typst-layout = "0.15.1"
+# Page images for the report preview.
+typst-render = "0.15.1"
+base64 = "0.22"
+rust_xlsxwriter = { version = "0.102.0", features = ["constant_memory"] }
+# Native Save dialog and "Open file" / "Show in folder" for generated reports (Rust side only).
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
 
 [lints.rust]
 unsafe_code = "forbid"

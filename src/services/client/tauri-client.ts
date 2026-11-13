@@ -108,6 +108,12 @@ export const tauriClient: IntalixClient = {
     remove: (id) => call("queries_delete", { id }),
   },
 
+  reports: {
+    generate: (connectionId, request, signal) => cancellable("report_generate", { connectionId, request }, signal),
+    preview: (connectionId, request, signal) => cancellable("report_preview", { connectionId, request }, signal),
+    open: (path, reveal) => call("report_open", { path, reveal }),
+  },
+
   sql: {
     analyze: (sql, variables) => call("sql_analyze", { sql, variables }),
     complete: (connectionId, sql, cursor, variables) => call("sql_complete", { connectionId, sql, cursor, variables }),

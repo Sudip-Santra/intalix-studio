@@ -7,6 +7,7 @@ mod jobs;
 mod lang;
 mod model;
 mod pg;
+mod report;
 mod saved_queries;
 mod secrets;
 mod service;
@@ -38,6 +39,8 @@ pub fn run() {
     init_logging();
 
     let result = tauri::Builder::default()
+        // Native Save dialog for reports (used from Rust only; no dialog commands are exposed).
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             secrets::init_credential_store()?;
             let data_dir = app.path().app_data_dir()?;
@@ -49,6 +52,7 @@ pub fn run() {
                 pools: Pools::new(),
                 jobs: Jobs::default(),
                 catalogs: Default::default(),
+                generated: Default::default(),
             });
             if let Some(main) = app.get_webview_window("main") {
                 window::fit_and_show(&main);
@@ -84,6 +88,9 @@ pub fn run() {
             commands::sql_run,
             commands::sql_variable_options,
             commands::sql_column_values,
+            commands::report_generate,
+            commands::report_open,
+            commands::report_preview,
         ])
         .run(tauri::generate_context!());
 

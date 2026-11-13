@@ -33,6 +33,9 @@
     "allow-sql-check",
     "allow-sql-run",
     "allow-sql-variable-options",
-    "allow-sql-column-values"
+    "allow-sql-column-values",
+    "allow-report-generate",
+    "allow-report-open",
+    "allow-report-preview"
   ]
 }

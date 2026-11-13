@@ -8,10 +8,12 @@ const Dialog = DialogPrimitive.Root;
 type DialogContentProps = React.ComponentProps<typeof DialogPrimitive.Content> & {
   title: string;
   description?: string;
+  /** Classes for the body below the title bar (scrolls by default). */
+  bodyClassName?: string;
 };
 
 /** Centred modal with a title bar and close button. Esc and clicking outside close it. */
-function DialogContent({ title, description, className, children, ...props }: DialogContentProps) {
+function DialogContent({ title, description, className, bodyClassName, children, ...props }: DialogContentProps) {
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50" />
@@ -40,7 +42,7 @@ function DialogContent({ title, description, className, children, ...props }: Di
             <X className="size-4" />
           </DialogPrimitive.Close>
         </div>
-        <div className="min-h-0 overflow-y-auto">{children}</div>
+        <div className={cn("min-h-0 overflow-y-auto", bodyClassName)}>{children}</div>
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   );

@@ -36,7 +36,8 @@ use crate::pg::connect::PoolHandle;
 use crate::pg::errors::{Phase, map_pg_error};
 use crate::pg::policy::{check_read_only, quote_ident};
 use crate::pg::query::{
-    MAX_ROW_LIMIT, MAX_SQL_BYTES, begin_read_only, elapsed_ms, fetch, on_server, outcome,
+    Fetched, MAX_ROW_LIMIT, MAX_SQL_BYTES, RowSink, begin_read_only, elapsed_ms, fetch, fetch_each,
+    on_server, outcome,
 };
 
 /// How a variable reference was typed, for the editor's check panel.
@@ -346,6 +347,24 @@ pub async fn check(
     })
 }
 
+/// The values for each parameter of a plan, in `$n` order. Switched-off or missing values
+/// bind NULL.
+fn bind_values(plan: &Plan, values: &BoundValues) -> Vec<Box<dyn ToSql + Sync + Send>> {
+    plan.compiled
+        .slots
+        .iter()
+        .map(|slot| -> Box<dyn ToSql + Sync + Send> {
+            match values.get(&(slot.variable.clone(), slot.part)) {
+                Some(Bound::Text(v)) => Box::new(v.clone()),
+                Some(Bound::TextArray(v)) => Box::new(v.clone()),
+                // Validation resolves every defined variable; NULL is the safe fallback.
+                None if slot.is_array() => Box::new(None::<Vec<String>>),
+                None => Box::new(None::<String>),
+            }
+        })
+        .collect()
+}
+
 /// Runs the query with the given (already validated) values.
 pub async fn run(
     handle: &PoolHandle,
@@ -362,20 +381,7 @@ pub async fn run(
     let result = on_server(handle, jobs, request_id, async |client: &mut Object| {
         let mut tx = begin_read_only(client, timeout_secs).await?;
         let plan = plan(&mut tx, sql, defs, &skipped_variables(defs)).await?;
-        let owned: Vec<Box<dyn ToSql + Sync + Send>> = plan
-            .compiled
-            .slots
-            .iter()
-            .map(|slot| -> Box<dyn ToSql + Sync + Send> {
-                match values.get(&(slot.variable.clone(), slot.part)) {
-                    Some(Bound::Text(v)) => Box::new(v.clone()),
-                    Some(Bound::TextArray(v)) => Box::new(v.clone()),
-                    // Validation resolves every defined variable; NULL is the safe fallback.
-                    None if slot.is_array() => Box::new(None::<Vec<String>>),
-                    None => Box::new(None::<String>),
-                }
-            })
-            .collect();
+        let owned = bind_values(&plan, values);
         let params: Vec<&(dyn ToSql + Sync)> = owned
             .iter()
             .map(|b| b.as_ref() as &(dyn ToSql + Sync))
@@ -392,6 +398,42 @@ pub async fn run(
     })
     .await?;
     Ok(outcome(result, started))
+}
+
+/// Runs the query and streams up to `max_rows` rows into `sink` (for reports, which may be
+/// far larger than an on-screen result). `Ok(Err(..))` is a failure to show; `Err` means
+/// cancelled.
+#[allow(clippy::too_many_arguments)]
+pub async fn stream(
+    handle: &PoolHandle,
+    jobs: &Jobs,
+    request_id: &str,
+    sql: &str,
+    defs: &[VariableDef],
+    values: &BoundValues,
+    max_rows: u64,
+    sink: &mut dyn RowSink,
+) -> AppResult<Result<Fetched, AppError>> {
+    let timeout_secs = handle.query_timeout_secs;
+    on_server(handle, jobs, request_id, async |client: &mut Object| {
+        let mut tx = begin_read_only(client, timeout_secs).await?;
+        let plan = plan(&mut tx, sql, defs, &skipped_variables(defs)).await?;
+        let owned = bind_values(&plan, values);
+        let params: Vec<&(dyn ToSql + Sync)> = owned
+            .iter()
+            .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+            .collect();
+        let result = fetch_each(&tx, &plan.statement, &params, max_rows, sink)
+            .await
+            .map_err(|e| plan.compiled.map_error(e));
+        drop(params);
+        drop(plan);
+        if let Err(error) = tx.rollback().await {
+            tracing::debug!(%error, "rollback after report query failed");
+        }
+        result
+    })
+    .await
 }
 
 #[cfg(test)]
