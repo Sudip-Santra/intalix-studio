@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sql-check"
+description = "Enables the sql_check command without any pre-configured scope."
+commands.allow = ["sql_check"]
+
+[[permission]]
+identifier = "deny-sql-check"
+description = "Denies the sql_check command without any pre-configured scope."
+commands.deny = ["sql_check"]

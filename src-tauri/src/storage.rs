@@ -13,6 +13,7 @@ use sqlx::sqlite::{
 
 use crate::error::{AppError, AppResult};
 use crate::model::{ConnectionDraft, ConnectionProfile, Environment, SslMode};
+use crate::saved_queries::{SavedQuery, SavedQueryDraft};
 use crate::templates::{ReportTemplate, SCHEMA_VERSION};
 
 #[derive(Clone)]
@@ -206,6 +207,89 @@ impl Store {
             .await?;
         Ok(())
     }
+
+    /* ---------------------------------- saved queries ---------------------------------- */
+
+    pub async fn list_saved_queries(&self) -> AppResult<Vec<SavedQuery>> {
+        let rows = sqlx::query("SELECT * FROM saved_queries ORDER BY updated_at DESC")
+            .fetch_all(&self.pool)
+            .await?;
+        // One damaged row must not hide every other query.
+        Ok(rows
+            .iter()
+            .filter_map(|r| match row_to_saved_query(r) {
+                Ok(q) => Some(q),
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping unreadable saved query");
+                    None
+                }
+            })
+            .collect())
+    }
+
+    pub async fn get_saved_query(&self, id: &str) -> AppResult<SavedQuery> {
+        let row = sqlx::query("SELECT * FROM saved_queries WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| AppError::not_found("This query no longer exists."))?;
+        row_to_saved_query(&row)
+    }
+
+    pub async fn count_saved_queries(&self) -> AppResult<i64> {
+        Ok(sqlx::query_scalar("SELECT COUNT(*) FROM saved_queries")
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
+    /// `draft` must already be validated.
+    pub async fn upsert_saved_query(
+        &self,
+        id: &str,
+        draft: &SavedQueryDraft,
+    ) -> AppResult<SavedQuery> {
+        let variables = serde_json::to_string(&draft.variables)
+            .map_err(|e| AppError::internal("saving query", e))?;
+        let now = now_iso();
+        sqlx::query(
+            "INSERT INTO saved_queries (id, name, description, sql_text, variables, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET name = excluded.name, description = excluded.description, \
+                 sql_text = excluded.sql_text, variables = excluded.variables, updated_at = excluded.updated_at",
+        )
+        .bind(id)
+        .bind(&draft.name)
+        .bind(&draft.description)
+        .bind(&draft.sql)
+        .bind(&variables)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.get_saved_query(id).await
+    }
+
+    pub async fn delete_saved_query(&self, id: &str) -> AppResult<()> {
+        sqlx::query("DELETE FROM saved_queries WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+fn row_to_saved_query(r: &sqlx::sqlite::SqliteRow) -> AppResult<SavedQuery> {
+    let variables: String = r.try_get("variables")?;
+    Ok(SavedQuery {
+        id: r.try_get("id")?,
+        name: r.try_get("name")?,
+        description: r.try_get("description")?,
+        sql: r.try_get("sql_text")?,
+        variables: serde_json::from_str(&variables)
+            .map_err(|e| AppError::internal("reading saved query", e))?,
+        created_at: r.try_get("created_at")?,
+        updated_at: r.try_get("updated_at")?,
+    })
 }
 
 fn row_to_template(r: &sqlx::sqlite::SqliteRow) -> AppResult<ReportTemplate> {
@@ -336,5 +420,44 @@ mod tests {
         store.delete_template("t1").await.unwrap();
         assert!(store.list_templates().await.unwrap().is_empty());
         assert!(store.get_template("t1").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn saved_queries_round_trip() {
+        use crate::lang::variables::{OptionItem, OptionsSource, VariableDef, VariableType};
+        let store = Store::in_memory().await.unwrap();
+        let draft = SavedQueryDraft {
+            name: "Sales".into(),
+            description: "By region".into(),
+            sql: "SELECT * FROM s WHERE r = {{region}}".into(),
+            variables: vec![VariableDef {
+                name: "region".into(),
+                label: "Region".into(),
+                kind: VariableType::Enum,
+                required: false,
+                default: serde_json::json!("north"),
+                options: Some(OptionsSource::List {
+                    values: vec![OptionItem {
+                        value: "north".into(),
+                        label: "North".into(),
+                    }],
+                }),
+                help: String::new(),
+            }],
+        };
+        let saved = store.upsert_saved_query("q1", &draft).await.unwrap();
+        assert_eq!(saved.variables, draft.variables);
+        assert_eq!(saved.sql, draft.sql);
+
+        let mut renamed = draft.clone();
+        renamed.name = "Sales 2".into();
+        let again = store.upsert_saved_query("q1", &renamed).await.unwrap();
+        assert_eq!(again.name, "Sales 2");
+        assert_eq!(again.created_at, saved.created_at);
+        assert_eq!(store.count_saved_queries().await.unwrap(), 1);
+
+        store.delete_saved_query("q1").await.unwrap();
+        assert!(store.list_saved_queries().await.unwrap().is_empty());
+        assert!(store.get_saved_query("q1").await.is_err());
     }
 }

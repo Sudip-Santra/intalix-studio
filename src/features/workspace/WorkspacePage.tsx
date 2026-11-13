@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { BarChart3, Database, History, LayoutTemplate, Lock, Plus, type LucideIcon } from "lucide-react";
+import { BarChart3, Database, FileCode2, History, LayoutTemplate, Lock, Plus, type LucideIcon } from "lucide-react";
 import {
   client,
   type CompletionCatalog,
@@ -22,8 +22,9 @@ import { hasUnsavedWork, initialTabsState, tabsReducer } from "./tabs-state";
 import { WorkspaceContext, type WorkspaceApi } from "./workspace-context";
 import { SEPARATOR_CLASS } from "./styles";
 import { TemplatesPage } from "@/features/templates/TemplatesPage";
+import { SqlEditorPage } from "@/features/sql-editor/SqlEditorPage";
 
-type Section = "explorer" | "templates";
+type Section = "explorer" | "sql" | "templates";
 
 type WorkspacePageProps = {
   profile: ConnectionProfile;
@@ -37,6 +38,7 @@ export function WorkspacePage({ profile, onSwitch, onManageConnections, onDiscon
   const [section, setSection] = useState<Section>("explorer");
   // The templates page mounts on first visit and then stays mounted, so drafts survive switching.
   const [templatesOpened, setTemplatesOpened] = useState(false);
+  const [sqlOpened, setSqlOpened] = useState(false);
   const [database, setDatabase] = useState<DatabaseInfo | null>(null);
   const [catalog, setCatalog] = useState<CompletionCatalog>();
   /** Tabs waiting for "discard unsaved work?" confirmation before closing. */
@@ -128,9 +130,15 @@ export function WorkspacePage({ profile, onSwitch, onManageConnections, onDiscon
             section={section}
             onSelect={(next) => {
               if (next === "templates") setTemplatesOpened(true);
+              if (next === "sql") setSqlOpened(true);
               setSection(next);
             }}
           />
+          {sqlOpened && (
+            <div hidden={section !== "sql"} className="min-w-0 flex-1">
+              <SqlEditorPage profile={profile} active={section === "sql"} />
+            </div>
+          )}
           {templatesOpened && (
             <div hidden={section !== "templates"} className="min-w-0 flex-1">
               <TemplatesPage active={section === "templates"} />
@@ -215,6 +223,7 @@ export function WorkspacePage({ profile, onSwitch, onManageConnections, onDiscon
 function IconRail({ section, onSelect }: { section: Section; onSelect: (section: Section) => void }) {
   const items: { icon: LucideIcon; label: string; section?: Section }[] = [
     { icon: Database, label: "Database Explorer", section: "explorer" },
+    { icon: FileCode2, label: "SQL Editor", section: "sql" },
     { icon: LayoutTemplate, label: "Report Templates", section: "templates" },
     { icon: BarChart3, label: "Reports (coming soon)" },
     { icon: History, label: "Run History (coming soon)" },

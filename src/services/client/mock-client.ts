@@ -31,6 +31,16 @@ import {
   relationDetail,
 } from "./mock/catalog";
 import { simulateQuery, wait } from "./mock/query";
+import {
+  loadMockQueries,
+  mockAnalyze,
+  mockCheck,
+  mockComplete,
+  mockRun,
+  mockVariableOptions,
+  removeMockQuery,
+  saveMockQuery,
+} from "./mock/sql";
 
 const profiles: ConnectionProfile[] = [];
 
@@ -232,6 +242,36 @@ export const mockClient: IntalixClient = {
     async remove(id) {
       await wait(100);
       storeMockTemplates(loadMockTemplates().filter((t) => t.id !== id));
+    },
+  },
+
+  queries: {
+    async list() {
+      await wait(120);
+      return loadMockQueries();
+    },
+    async save(draft, id) {
+      await wait(150);
+      return saveMockQuery(draft, id);
+    },
+    async remove(id) {
+      await wait(100);
+      removeMockQuery(id);
+    },
+  },
+
+  sql: {
+    analyze: async (sql, variables) => mockAnalyze(sql, variables),
+    complete: async (_connectionId, sql, cursor, variables) => mockComplete(sql, cursor, variables),
+    signature: async () => null,
+    refreshCatalog: () => wait(200),
+    check: (_connectionId, sql, variables, signal) => mockCheck(sql, variables, signal),
+    run: (_connectionId, sql, variables, values, { rowLimit }, signal) =>
+      mockRun(sql, variables, values, rowLimit, signal),
+    variableOptions: (_connectionId, sql, signal) => mockVariableOptions(sql, signal),
+    columnValues: async (_connectionId, _sql, variable, signal) => {
+      const outcome = await mockVariableOptions("SELECT 1", signal);
+      return outcome.ok ? { ...outcome, column: `public.simulated.${variable}` } : outcome;
     },
   },
 };

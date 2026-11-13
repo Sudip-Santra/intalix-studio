@@ -7,6 +7,7 @@ pub mod introspect;
 pub mod policy;
 pub mod query;
 pub mod tls;
+pub mod variables;
 
 #[cfg(test)]
 mod integration_tests;

@@ -4,8 +4,10 @@
 mod commands;
 mod error;
 mod jobs;
+mod lang;
 mod model;
 mod pg;
+mod saved_queries;
 mod secrets;
 mod service;
 mod storage;
@@ -46,6 +48,7 @@ pub fn run() {
                 secrets: Secrets::new(),
                 pools: Pools::new(),
                 jobs: Jobs::default(),
+                catalogs: Default::default(),
             });
             if let Some(main) = app.get_webview_window("main") {
                 window::fit_and_show(&main);
@@ -70,6 +73,17 @@ pub fn run() {
             commands::templates_list,
             commands::templates_save,
             commands::templates_delete,
+            commands::queries_list,
+            commands::queries_save,
+            commands::queries_delete,
+            commands::sql_analyze,
+            commands::sql_complete,
+            commands::sql_signature,
+            commands::sql_refresh_catalog,
+            commands::sql_check,
+            commands::sql_run,
+            commands::sql_variable_options,
+            commands::sql_column_values,
         ])
         .run(tauri::generate_context!());
 

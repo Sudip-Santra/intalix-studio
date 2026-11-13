@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-queries-list"
+description = "Enables the queries_list command without any pre-configured scope."
+commands.allow = ["queries_list"]
+
+[[permission]]
+identifier = "deny-queries-list"
+description = "Denies the queries_list command without any pre-configured scope."
+commands.deny = ["queries_list"]

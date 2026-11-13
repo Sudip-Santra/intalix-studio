@@ -1345,8 +1345,9 @@ this section wins.
 | SQL workspace: editor with PostgreSQL syntax and schema autocomplete, run selection, cancel, row limit, typed result grid, read-only statement guard | UI done, simulated backend |
 | Right-click menus (pgAdmin-style, read-only items) on explorer, tabs and result grid; browser menu suppressed | UI done |
 | Real backend: connections, credential storage, schema introspection, read-only query execution, cancellation | Done, tested against PostgreSQL 17 |
-| Command allow-list: the window may call only the 16 declared backend commands | Done |
+| Command allow-list: the window may call only the 27 declared backend commands | Done |
 | Report template designer: built-in templates, live true-size preview with real pagination, full design settings, save/duplicate/delete | Done, stored in local SQLite |
+| SQL Editor: Rust PostgreSQL language service (hints, live diagnostics, server check), typed `{{variables}}` as filters, saved queries | Done, stored in local SQLite |
 
 ### 24.3.1 Report templates (2026-11-12)
 
@@ -1386,6 +1387,103 @@ this section wins.
 -   **Fonts:** Inter is bundled; Segoe UI, Arial, Calibri, Georgia and
     Cambria come from Windows. PDF export must embed the chosen font.
 
+### 24.3.2 SQL Editor and variables (2026-11-13)
+
+-   **Where:** a SQL Editor section on the workspace icon rail
+    (`src/features/sql-editor`), between Database Explorer and Report
+    Templates. Left: saved queries. Centre: editor and results. Right:
+    Variables panel. It stays mounted when you switch sections.
+-   **Saved queries** are not tied to a connection, so one query runs
+    against development, staging and production copies of a database.
+    Stored in `saved_queries` (migration 0003); commands `queries_list`,
+    `queries_save`, `queries_delete`. Limits: name 1-120 characters,
+    SQL up to 1 MB, 50 variables, 2,000 saved queries.
+-   **Language service in Rust** (`src-tauri/src/lang`), PostgreSQL only
+    for now:
+    -   a tolerant lexer (strings, `E''`, `$$`, nested comments, quoted
+        names, `{{variables}}`), with UTF-16 offsets so positions match
+        the editor exactly;
+    -   instant diagnostics: unclosed quotes, comments and brackets,
+        dangling commas, `= NULL`, variables inside quotes, `$1`
+        parameters, wrong variable use, several statements (warning) and
+        the read-only policy per statement;
+    -   a **server check**: when the offline checks pass, PostgreSQL
+        parses and analyses the query (prepare only, nothing runs, READ
+        ONLY transaction). This catches every syntax error, unknown table
+        or column and type mismatch exactly, and reports the result
+        columns and each variable's PostgreSQL type;
+    -   context-aware completion: tables after FROM/JOIN, columns through
+        aliases, CTEs and subqueries, `schema.` members, types after `::`
+        and `CAST(… AS`, variables after `{{`, functions with snippets,
+        and the keywords that fit the clause;
+    -   signature help for about 100 built-in functions (with short
+        descriptions) and for the user's own functions from the catalog.
+    -   The catalog for hints (relations, column types, user functions,
+        search path) is loaded once per connection and cached; it is
+        dropped on edit, disconnect, delete or the reload button. Hints
+        never wait more than 4 seconds for it.
+-   **Explorer query tabs** use the same hints and checks, without
+    variables.
+-   **Variables:** written as `{{name}}`; date ranges as
+    `{{name.from}}` / `{{name.to}}` (both dates included). Types: Text,
+    Number, Date, Date range, Enum, Multi-select. Enum (single choice)
+    takes a fixed list (`value | Label` per line) or a read-only lookup
+    query (column 1 value, optional column 2 label, up to 1,000).
+-   **Multi-select (user decision, 2026-11-13):** no setup. Write
+    `col IN ({{x}})` (or `col = ANY({{x}})`); the Value dropdown lists
+    the distinct values of that column (`SELECT DISTINCT … LIMIT 1000`,
+    loaded when the dropdown opens) and several can be ticked. The
+    backend (`src-tauri/src/lang/columns.rs`) finds the column through
+    the statement's tables and aliases; it gives a clear message when it
+    can't (expressions, CTE columns). `IN ({{x}})` is compiled to
+    `= ANY(…)` and `NOT IN ({{x}})` to `<> ALL(…)`. A reference inside
+    `IN (` or `ANY(` is auto-created as Multi-select. Command
+    `sql_column_values`.
+-   **Variables panel is deliberately minimal (user decision,
+    2026-11-13):** each variable shows only **Type**, **Required** (on
+    by default) and **Value** below them, plus the choices list for a
+    single-choice Enum. The
+    value is entered right there and saved with the query; the run uses
+    it. There is no separate filter bar, default value, label or help
+    text in the UI. Running with a required variable empty marks it
+    instead of running.
+-   **Auto-definition:** typing a new `{{name}}` creates the variable
+    with a type guessed from its name and use (`.from`/`.to` → date
+    range, inside `ANY(` → multi-select, `*_date` → date, `min_*`/
+    `amount` → number). Auto-created variables that are never edited
+    disappear again if the reference is removed.
+-   **Binding (security):** values are never placed in the SQL text.
+    `src-tauri/src/pg/variables.rs` turns each reference into a numbered
+    parameter in two prepares: first PostgreSQL infers the type each
+    position needs (enum column, integer, `text[]` …; undecidable
+    parameters get the variable type's default and are retried), then
+    every value is sent as text and converted with an explicit cast,
+    e.g. `(($1::text)::date)`. This behaves like a typed literal without
+    any quoting risk. Errors are mapped back to positions in the
+    original SQL.
+-   **Required = filter applied (user decision, 2026-11-13):** a
+    required variable is applied and must have a value. A variable that
+    is **not required is switched off: its condition is removed whatever
+    value it holds**, and its value is neither validated nor sent. The
+    backend (`src-tauri/src/lang/optional.rs`) replaces the smallest
+    condition around the reference in a `WHERE` / `ON` / `HAVING` clause
+    with `TRUE` (conditions split on `AND` / `OR`; `BETWEEN … AND …`,
+    function calls, `IN (…)` and `ANY(…)` stay whole). Example:
+    `WHERE cat_no = {{cat_no}} AND active` runs as
+    `WHERE TRUE AND active`. A reference outside such a clause (select
+    list, `LIMIT`) can't be removed and binds NULL. New variables start
+    as required. The server check always checks the full query.
+-   **Date picker (2026-11-13):** dates use the app's own calendar
+    (`src/components/ui/date-picker.tsx`), not the browser's: sharp
+    corners, accent-coloured selection, today marked, range shading for
+    from/to, month and year pickers (click the month or year in the
+    header), Today and Clear, full keyboard support (arrows, PageUp/Down,
+    Shift for years). Dates show as "13 Nov 2026" and are stored as
+    `YYYY-MM-DD`.
+-   Commands: `sql_analyze`, `sql_complete`, `sql_signature`,
+    `sql_refresh_catalog`, `sql_check`, `sql_run`,
+    `sql_variable_options`.
+
 ### 24.4 Notes for the backend
 
 -   Query results use a typed cell model (`Cell` in
@@ -1411,6 +1509,16 @@ src-tauri/src/
 ├── jobs.rs          cancellable request registry
 ├── secrets.rs       Windows Credential Manager (Local persistence) + session-only secrets
 ├── storage.rs       SQLite with versioned migrations (src-tauri/migrations)
+├── templates.rs     report template validation
+├── saved_queries.rs saved SQL Editor queries and their validation
+├── lang/            PostgreSQL language service (pure, offline)
+│   ├── lexer.rs     tolerant lexer with UTF-16 offsets and {{variables}}
+│   ├── analyze.rs   instant diagnostics
+│   ├── complete.rs  completions and signature help
+│   ├── scope.rs     relations, aliases and CTEs in scope; current clause
+│   ├── docs.rs      keywords, built-in functions, types
+│   ├── catalog.rs   cached per-connection names for hints
+│   └── variables.rs variable definitions, value validation, {{x}} → $n compilation
 └── pg/
     ├── connect.rs   driver config, connection test, per-connection bounded pools
     ├── tls.rs       libpq-equivalent SSL modes; Windows trust store or CA file
@@ -1418,6 +1526,7 @@ src-tauri/src/
     ├── query.rs     READ ONLY execution, timeouts, batched fetch, row and memory limits
     ├── decode.rs    exact binary decoding of PostgreSQL values
     ├── introspect.rs catalog queries and DDL reconstruction (PostgreSQL 12+)
+    ├── variables.rs two-pass typed binding of {{variables}}; server check
     └── errors.rs    driver error to user-safe error mapping
 ```
 

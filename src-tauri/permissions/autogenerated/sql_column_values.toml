@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sql-column-values"
+description = "Enables the sql_column_values command without any pre-configured scope."
+commands.allow = ["sql_column_values"]
+
+[[permission]]
+identifier = "deny-sql-column-values"
+description = "Denies the sql_column_values command without any pre-configured scope."
+commands.deny = ["sql_column_values"]

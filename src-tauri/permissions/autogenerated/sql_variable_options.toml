@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sql-variable-options"
+description = "Enables the sql_variable_options command without any pre-configured scope."
+commands.allow = ["sql_variable_options"]
+
+[[permission]]
+identifier = "deny-sql-variable-options"
+description = "Denies the sql_variable_options command without any pre-configured scope."
+commands.deny = ["sql_variable_options"]

@@ -17,6 +17,17 @@ const COMMANDS: &[&str] = &[
     "templates_list",
     "templates_save",
     "templates_delete",
+    "queries_list",
+    "queries_save",
+    "queries_delete",
+    "sql_analyze",
+    "sql_complete",
+    "sql_signature",
+    "sql_refresh_catalog",
+    "sql_check",
+    "sql_run",
+    "sql_variable_options",
+    "sql_column_values",
 ];
 
 fn main() {
