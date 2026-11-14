@@ -432,6 +432,8 @@ export type ReportOutcome =
       rows: number;
       /** E.g. a format that couldn't be created. */
       warnings: string[];
+      /** Built from the rows the preview had just read, without running the query again. */
+      fromPreview: boolean;
       durationMs: number;
     }
   | Extract<QueryOutcome, { ok: false }>;

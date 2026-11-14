@@ -53,7 +53,10 @@ pub fn run() {
                 jobs: Jobs::default(),
                 catalogs: Default::default(),
                 generated: Default::default(),
+                previews: Default::default(),
             });
+            // Report fonts load in the background, ready for the first preview.
+            std::thread::spawn(report::pdf::warm_up);
             if let Some(main) = app.get_webview_window("main") {
                 window::fit_and_show(&main);
             }

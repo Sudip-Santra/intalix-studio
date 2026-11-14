@@ -6,6 +6,7 @@
 //! and renamed when complete, so a failed or cancelled report never leaves a half-written file
 //! under the chosen name.
 
+pub mod cache;
 pub mod fit;
 pub mod format;
 pub mod pdf;
@@ -69,6 +70,8 @@ pub struct ReportSuccess {
     pub rows: u64,
     /// Things the user should know, e.g. a format that was skipped.
     pub warnings: Vec<String>,
+    /// Built from the rows the preview had just read, without running the query again.
+    pub from_preview: bool,
     pub duration_ms: u64,
 }
 
@@ -485,7 +488,11 @@ pub const SHORTENED_NOTE: &str =
 
 /// Writes the PDF to a temporary file and moves it into place.
 pub fn write_pdf(data: &ReportData, template: &Template, target: &Path) -> AppResult<WrittenPdf> {
-    let laid = pdf::layout(data, template)?;
+    save_pdf(&pdf::layout(data, template)?, target)
+}
+
+/// Writes an already laid-out PDF to a temporary file and moves it into place.
+pub fn save_pdf(laid: &pdf::Laid, target: &Path) -> AppResult<WrittenPdf> {
     let pages = laid.document.pages().len();
     if pages > PDF_MAX_PAGES {
         return Err(AppError::invalid(format!(
@@ -543,10 +550,9 @@ pub struct PreviewPages {
     pub crowded: bool,
 }
 
-/// Lays out a preview and draws its first pages.
-pub fn preview_pages(data: &ReportData, template: &Template) -> AppResult<PreviewPages> {
+/// Draws the first pages of a laid-out preview.
+pub fn preview_pages(laid: &pdf::Laid) -> AppResult<PreviewPages> {
     use base64::Engine;
-    let laid = pdf::layout(data, template)?;
     let images = pdf::page_images(&laid.document, PREVIEW_PAGES)?;
     let urls = images
         .iter()

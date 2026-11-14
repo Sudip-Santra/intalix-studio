@@ -415,6 +415,7 @@ export function ReportDialog({ open, onOpenChange, connectionId, queryName, sql,
                 <p className="text-xs text-muted-foreground">
                   {formatCount(phase.outcome.rows)} {phase.outcome.rows === 1 ? "row" : "rows"} ·{" "}
                   {(phase.outcome.durationMs / 1000).toFixed(1)} s
+                  {phase.outcome.fromPreview && " · used the rows from the preview"}
                 </p>
               </div>
             </div>

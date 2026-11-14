@@ -288,7 +288,7 @@ export const mockClient: IntalixClient = {
             ]
           : []),
       ];
-      return { ok: true, files, rows: 128, warnings: [], durationMs: 1400 };
+      return { ok: true, files, rows: 128, warnings: [], fromPreview: false, durationMs: 1400 };
     },
     async preview(_connectionId, request, signal) {
       await wait(700, signal);

@@ -62,6 +62,11 @@ struct Shared {
     fonts: Vec<Font>,
 }
 
+/// Loads the fonts ahead of the first report, so the first preview isn't slower.
+pub fn warm_up() {
+    let _ = shared();
+}
+
 /// Fonts and the standard library, loaded once per run of the app.
 fn shared() -> &'static Shared {
     static SHARED: OnceLock<Shared> = OnceLock::new();

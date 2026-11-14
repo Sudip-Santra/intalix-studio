@@ -57,6 +57,11 @@ panic = "deny"
 todo = "warn"
 dbg_macro = "deny"
 
+# Dependencies (above all Typst) are optimised even in dev builds: unoptimised Typst makes
+# report previews many times slower. Only the first dev build takes longer.
+[profile.dev.package."*"]
+opt-level = 2
+
 [profile.release]
 codegen-units = 1
 lto = true

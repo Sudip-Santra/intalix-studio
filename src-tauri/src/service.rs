@@ -47,6 +47,8 @@ pub struct AppState {
     pub catalogs: Catalogs,
     /// Report files written in this session; only these can be opened from the UI.
     pub generated: std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
+    /// Rows and layout of the last report preview.
+    pub previews: report::cache::PreviewCache,
 }
 
 /// Choices for an enum variable, from its lookup query.
@@ -568,6 +570,13 @@ impl AppState {
             Ok(p) => p,
             Err(error) => return failed(error),
         };
+        // A fresh preview that read every row can stand in for running the query again.
+        let data_key = report::cache::data_key(profile_id, &request);
+        let kept = self.previews.rows(&data_key).filter(|k| k.complete);
+        let kept_layout = kept.as_ref().and_then(|_| {
+            self.previews
+                .layout(&data_key, &report::cache::layout_key(&request))
+        });
 
         // Where to save. With both formats the Excel file goes next to the PDF.
         let ext = if request.pdf { "pdf" } else { "xlsx" };
@@ -595,28 +604,37 @@ impl AppState {
             .map_err(|e| AppError::internal("save dialog path", e))?;
         let (pdf_path, xlsx_path) = report::targets(&chosen, request.pdf, request.xlsx);
 
-        // Stream the rows into the report.
-        self.jobs.register(request_id);
-        let streamed = async {
-            let handle = self.pool(profile_id).await?;
-            crate::pg::variables::stream(
-                &handle,
-                &self.jobs,
-                request_id,
-                &request.sql,
-                &request.variables,
-                &bound,
-                prepared.max_rows,
-                &mut prepared.sink,
-            )
-            .await
-        }
-        .await;
-        self.jobs.finish(request_id);
-        let fetched = match streamed {
-            Err(error) if error.category == ErrorCategory::Cancelled => return Err(error),
-            Err(error) | Ok(Err(error)) => return failed(error),
-            Ok(Ok(fetched)) => fetched,
+        // Stream the rows into the report (or replay the preview's).
+        let fetched = if let Some(kept) = &kept {
+            let sink = &mut prepared.sink;
+            let max_rows = prepared.max_rows;
+            match tokio::task::block_in_place(|| report::cache::replay(kept, sink, max_rows)) {
+                Ok(fetched) => fetched,
+                Err(error) => return failed(error),
+            }
+        } else {
+            self.jobs.register(request_id);
+            let streamed = async {
+                let handle = self.pool(profile_id).await?;
+                crate::pg::variables::stream(
+                    &handle,
+                    &self.jobs,
+                    request_id,
+                    &request.sql,
+                    &request.variables,
+                    &bound,
+                    prepared.max_rows,
+                    &mut prepared.sink,
+                )
+                .await
+            }
+            .await;
+            self.jobs.finish(request_id);
+            match streamed {
+                Err(error) if error.category == ErrorCategory::Cancelled => return Err(error),
+                Err(error) | Ok(Err(error)) => return failed(error),
+                Ok(Ok(fetched)) => fetched,
+            }
         };
 
         // Write the files. Layout and compression are CPU work, kept off the async threads.
@@ -649,7 +667,11 @@ impl AppState {
                 ));
             } else {
                 let template = &prepared.template;
-                match tokio::task::block_in_place(|| report::write_pdf(data, template, path)) {
+                let written = tokio::task::block_in_place(|| match &kept_layout {
+                    Some(laid) => report::save_pdf(laid, path),
+                    None => report::write_pdf(data, template, path),
+                });
+                match written {
                     Ok(written) => {
                         files.push(report::generated("pdf", path, Some(written.pages)));
                         if written.shortened {
@@ -678,6 +700,7 @@ impl AppState {
             files,
             rows: fetched.rows,
             warnings,
+            from_preview: kept.is_some(),
             duration_ms: report::elapsed(started),
         }))
     }
@@ -710,33 +733,63 @@ impl AppState {
             Ok(p) => p,
             Err(error) => return failed(error),
         };
+        let data_key = report::cache::data_key(profile_id, &request);
 
-        self.jobs.register(request_id);
-        let streamed = async {
-            let handle = self.pool(profile_id).await?;
-            crate::pg::variables::stream(
-                &handle,
-                &self.jobs,
-                request_id,
-                &request.sql,
-                &request.variables,
-                &bound,
-                prepared.max_rows,
-                &mut prepared.sink,
-            )
-            .await
-        }
-        .await;
-        self.jobs.finish(request_id);
-        let fetched = match streamed {
-            Err(error) if error.category == ErrorCategory::Cancelled => return Err(error),
-            Err(error) | Ok(Err(error)) => return failed(error),
-            Ok(Ok(fetched)) => fetched,
+        // Rows: kept from the last preview when only the look changed, otherwise read now.
+        let fetched = if let Some(kept) = self.previews.rows(&data_key) {
+            match report::cache::replay(&kept, &mut prepared.sink, prepared.max_rows) {
+                Ok(fetched) => fetched,
+                Err(error) => return failed(error),
+            }
+        } else {
+            self.jobs.register(request_id);
+            let mut recorder = report::cache::Recorder::new(&mut prepared.sink);
+            let streamed = async {
+                let handle = self.pool(profile_id).await?;
+                crate::pg::variables::stream(
+                    &handle,
+                    &self.jobs,
+                    request_id,
+                    &request.sql,
+                    &request.variables,
+                    &bound,
+                    prepared.max_rows,
+                    &mut recorder,
+                )
+                .await
+            }
+            .await;
+            self.jobs.finish(request_id);
+            let fetched = match streamed {
+                Err(error) if error.category == ErrorCategory::Cancelled => return Err(error),
+                Err(error) | Ok(Err(error)) => return failed(error),
+                Ok(Ok(fetched)) => fetched,
+            };
+            let mut kept = recorder.kept;
+            kept.complete = !fetched.truncated;
+            self.previews.keep_rows(data_key.clone(), kept);
+            fetched
         };
+        let read_ms = report::elapsed(started);
 
         let data = &prepared.sink.data;
         let template = &prepared.template;
-        match tokio::task::block_in_place(|| report::preview_pages(data, template)) {
+        let laid = match tokio::task::block_in_place(|| report::pdf::layout(data, template)) {
+            Ok(laid) => std::sync::Arc::new(laid),
+            Err(error) => return failed(error),
+        };
+        let laid_ms = report::elapsed(started);
+        let drawn = tokio::task::block_in_place(|| report::preview_pages(&laid));
+        tracing::info!(
+            rows = fetched.rows,
+            read_ms,
+            layout_ms = laid_ms - read_ms,
+            draw_ms = report::elapsed(started) - laid_ms,
+            "report preview"
+        );
+        self.previews
+            .keep_layout(&data_key, report::cache::layout_key(&request), laid);
+        match drawn {
             Ok(drawn) => Ok(PreviewOutcome::Ok(PreviewSuccess {
                 ok: true,
                 pages: drawn.images,

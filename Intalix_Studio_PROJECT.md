@@ -1546,6 +1546,20 @@ this section wins.
     PNG) from the first 200 rows; it redraws when the name, template or
     orientation changes. It flags tables with too many columns for the
     page (with a "Use landscape" button) and shortened text.
+-   **Preview speed (2026-11-14):** the rows a preview reads are kept
+    for 5 minutes (`report/cache.rs`, one preview at a time). Changing
+    only the template, orientation or name redraws from them without
+    running the query again. Report fonts load in the background at
+    startup. The log records each preview's read / layout / draw times.
+    Dependencies are optimised in dev builds too (`[profile.dev.package]`),
+    since unoptimised Typst is many times slower.
+-   **Generate after Preview:** when the preview already holds every row
+    of the query (200 rows or fewer) and is under 5 minutes old, Generate
+    uses those rows instead of running the query again, and reuses the
+    PDF layout when the template, orientation and name are unchanged.
+    The done screen says "used the rows from the preview". Larger
+    queries always run again in full, since the preview has only the
+    first 200 rows.
 -   **Fitting wide tables** (`report/fit.rs`): column widths come from
     the values (90th-percentile length for text, full length for numbers
     and dates, the longest heading word). When they don't fit, columns
@@ -1598,6 +1612,7 @@ src-tauri/src/
 │   ├── template.rs  template definition with defaults
 │   ├── format.rs    numbers, dates, column kinds, exact totals
 │   ├── fit.rs       fitting the PDF table to the page width
+│   ├── cache.rs     rows and layout kept from the last preview
 │   ├── pdf.rs       Typst world, fonts, layout, preview images
 │   ├── report.typ   the PDF layout
 │   └── xlsx.rs      Excel writer
